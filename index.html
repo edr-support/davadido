@@ -1451,33 +1451,43 @@
             if(!log) return;
 
             let content = log.msg;
-            const jsonStart = content.indexOf('{');
-            const jsonEnd = content.lastIndexOf('}');
             
             let html = `<div class="space-y-3">`;
             
             // Add metadata at the top
             html += `
-                <div class="bg-slate-100 p-3 rounded text-xs space-y-1 border-l-4 border-emerald-500">
-                    <div><strong>Timestamp:</strong> ${escapeHtml(log.ts)}</div>
-                    <div><strong>Route:</strong> ${escapeHtml(log.route)}</div>
-                    <div><strong>Level:</strong> <span class="font-mono font-bold">${escapeHtml(log.lvl)}</span></div>
-                    <div><strong>PID:</strong> ${escapeHtml(log.pid)}</div>
+                <div class="bg-gradient-to-r from-slate-100 to-slate-50 p-4 rounded-lg text-xs space-y-2 border-l-4 border-emerald-500 shadow-sm">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div><span class="font-semibold text-slate-700">Timestamp:</span> <span class="font-mono text-slate-600">${escapeHtml(log.ts)}</span></div>
+                        <div><span class="font-semibold text-slate-700">PID:</span> <span class="font-mono text-slate-600">${escapeHtml(log.pid)}</span></div>
+                        <div><span class="font-semibold text-slate-700">Level:</span> <span class="font-mono font-bold text-emerald-700">${escapeHtml(log.lvl)}</span></div>
+                        <div><span class="font-semibold text-slate-700">Route:</span> <span class="font-mono text-slate-600 truncate">${escapeHtml(log.route)}</span></div>
+                    </div>
                 </div>
             `;
+            
+            // Try to parse as JSON first
+            const jsonStart = content.indexOf('{');
+            const jsonEnd = content.lastIndexOf('}');
+            let parsedObj = null;
             
             if (jsonStart >= 0 && jsonEnd > jsonStart) {
                 const potentialJson = content.substring(jsonStart, jsonEnd + 1);
                 try {
-                    const obj = JSON.parse(potentialJson);
-                    // Beautiful JSON rendering
-                    html += `<div class="bg-slate-900 p-4 rounded text-sm font-mono text-slate-100 overflow-auto max-h-96 border border-slate-700"><div class="inline-block">${renderJsonTree(obj, 0)}</div></div>`;
+                    parsedObj = JSON.parse(potentialJson);
                 } catch (e) {
-                    // Fallback for non-JSON
-                    html += `<div class="bg-slate-900 p-4 rounded text-sm font-mono text-slate-100 overflow-auto max-h-96 whitespace-pre-wrap border border-slate-700">${escapeHtml(content)}</div>`;
+                    // Not valid JSON, will try Rust format parsing
                 }
+            }
+            
+            // If we have a parsed object, use pretty display
+            if (parsedObj) {
+                html += `<div class="bg-slate-950 p-4 rounded-lg border border-slate-700 shadow-lg">${renderPrettyJson(parsedObj)}</div>`;
             } else {
-                html += `<div class="bg-slate-900 p-4 rounded text-sm font-mono text-slate-100 overflow-auto max-h-96 whitespace-pre-wrap border border-slate-700">${escapeHtml(content)}</div>`;
+                // Try to parse as Rust struct format
+                const rustMatch = content.match(/Job Payload: (.+)/s) || [null, content];
+                const rustContent = rustMatch[1] || content;
+                html += `<div class="bg-slate-950 p-4 rounded-lg border border-slate-700 shadow-lg text-sm font-mono text-slate-100">${renderRustStruct(rustContent)}</div>`;
             }
             
             html += `</div>`;
@@ -1486,44 +1496,109 @@
             document.getElementById('jsonModal').classList.remove('hidden');
         }
 
-        function renderJsonTree(obj, depth = 0) {
-            const indent = '&nbsp;&nbsp;'.repeat(depth);
-            const nextIndent = '&nbsp;&nbsp;'.repeat(depth + 1);
+        function renderPrettyJson(obj, depth = 0) {
+            const indent = depth * 16;
             
             if (obj === null) {
-                return `<span style="color: #fcd34d;">null</span>`;
+                return `<span style="color: #fcd34d; font-weight: 600;">null</span>`;
             }
             if (typeof obj === 'boolean') {
-                return `<span style="color: #93c5fd;">${obj}</span>`;
+                return `<span style="color: #60a5fa; font-weight: 600;">${obj}</span>`;
             }
             if (typeof obj === 'number') {
-                return `<span style="color: #06b6d4;">${obj}</span>`;
+                return `<span style="color: #34d399; font-weight: 600;">${obj}</span>`;
             }
             if (typeof obj === 'string') {
-                return `<span style="color: #86efac;">"${escapeHtml(obj)}"</span>`;
+                const shortStr = obj.length > 100 ? obj.substring(0, 97) + '...' : obj;
+                return `<span style="color: #86efac;">"${escapeHtml(shortStr)}"</span>`;
             }
             if (Array.isArray(obj)) {
-                if (obj.length === 0) return `<span style="color: #cbd5e1;">[&nbsp;]</span>`;
-                let html = `<span style="color: #cbd5e1;">[</span><br/>${nextIndent}`;
-                html += obj.map((item, i) => {
-                    const comma = i < obj.length - 1 ? ',<br/>' + nextIndent : '';
-                    return `${renderJsonTree(item, depth + 1)}${comma}`;
-                }).join('');
-                html += `<br/>${indent}<span style="color: #cbd5e1;">]</span>`;
-                return html;
+                if (obj.length === 0) return `<span style="color: #cbd5e1;">[ ]</span>`;
+                return `<div style="margin-left: ${indent}px;"><span style="color: #cbd5e1; font-weight: 600;">[</span><div style="margin-left: 16px; border-left: 2px solid #334155; padding-left: 12px;">
+                    ${obj.map((item, i) => `<div style="margin: 6px 0;">${renderPrettyJson(item, depth + 1)}${i < obj.length - 1 ? '<span style="color: #cbd5e1;">,</span>' : ''}</div>`).join('')}
+                </div><span style="color: #cbd5e1; font-weight: 600;">]</span></div>`;
             }
             if (typeof obj === 'object') {
                 const keys = Object.keys(obj);
-                if (keys.length === 0) return `<span style="color: #cbd5e1;">{&nbsp;}</span>`;
-                let html = `<span style="color: #cbd5e1;">{</span><br/>${nextIndent}`;
-                html += keys.map((key, i) => {
-                    const comma = i < keys.length - 1 ? ',<br/>' + nextIndent : '';
-                    return `<span style="color: #c084fc;">"${escapeHtml(key)}"</span><span style="color: #cbd5e1;">:&nbsp;</span>${renderJsonTree(obj[key], depth + 1)}${comma}`;
-                }).join('');
-                html += `<br/>${indent}<span style="color: #cbd5e1;">}</span>`;
-                return html;
+                if (keys.length === 0) return `<span style="color: #cbd5e1;">{ }</span>`;
+                
+                return `<div style="margin-left: ${indent}px;"><span style="color: #cbd5e1; font-weight: 600;">{</span><div style="margin-left: 16px; border-left: 2px solid #334155; padding-left: 12px;">
+                    ${keys.map((key, i) => `
+                        <div style="margin: 8px 0; display: flex;">
+                            <span style="color: #d8b4fe; font-weight: 500; min-width: 200px; word-break: break-word;">"${escapeHtml(key)}"</span>
+                            <span style="color: #cbd5e1; margin: 0 8px;">:</span>
+                            <div style="flex: 1;">${renderPrettyJson(obj[key], depth + 1)}</div>
+                            ${i < keys.length - 1 ? '<span style="color: #cbd5e1; margin-left: 8px;">,</span>' : ''}
+                        </div>
+                    `).join('')}
+                </div><span style="color: #cbd5e1; font-weight: 600;">}</span></div>`;
             }
-            return escapeHtml(String(obj));
+            return `<span style="color: #cbd5e1;">${escapeHtml(String(obj))}</span>`;
+        }
+
+        function renderRustStruct(content) {
+            // Split by commas that are at the top level (not inside brackets/parens)
+            const lines = [];
+            let current = '';
+            let depth = 0;
+            
+            for (let i = 0; i < content.length; i++) {
+                const char = content[i];
+                
+                if (char === '{' || char === '[' || char === '(') depth++;
+                if (char === '}' || char === ']' || char === ')') depth--;
+                
+                if (char === ',' && depth === 0) {
+                    lines.push(current.trim());
+                    current = '';
+                } else {
+                    current += char;
+                }
+            }
+            if (current.trim()) lines.push(current.trim());
+            
+            return `<div style="line-height: 1.6;">
+                ${lines.map((line, idx) => renderRustLine(line, idx, lines.length)).join('')}
+            </div>`;
+        }
+
+        function renderRustLine(line, idx, total) {
+            const colonIdx = line.indexOf(':');
+            if (colonIdx === -1) {
+                return `<div style="margin: 4px 0; color: #cbd5e1;">${escapeHtml(line)}</div>`;
+            }
+            
+            const key = line.substring(0, colonIdx).trim();
+            const value = line.substring(colonIdx + 1).trim();
+            const comma = idx < total - 1 ? '<span style="color: #cbd5e1;">,</span>' : '';
+            
+            // Detect type and color code
+            let valueHtml = '';
+            if (value.startsWith('String(')) {
+                const stringVal = value.match(/String\("(.*)"\)/)?.[1] || value;
+                const shortStr = stringVal.length > 80 ? stringVal.substring(0, 77) + '...' : stringVal;
+                valueHtml = `<span style="color: #86efac;">"${escapeHtml(shortStr)}"</span>`;
+            } else if (value.startsWith('Bool(')) {
+                const boolVal = value.match(/Bool\((true|false)\)/)?.[1] || value;
+                valueHtml = `<span style="color: #60a5fa; font-weight: 600;">${boolVal}</span>`;
+            } else if (value.startsWith('Number(')) {
+                const numVal = value.match(/Number\((.+)\)/)?.[1] || value;
+                valueHtml = `<span style="color: #34d399; font-weight: 600;">${numVal}</span>`;
+            } else if (value.startsWith('Null') || value === 'None') {
+                valueHtml = `<span style="color: #fcd34d; font-weight: 600;">null</span>`;
+            } else if (value.startsWith('Array') || value.startsWith('Some(')) {
+                valueHtml = `<span style="color: #cbd5e1; font-style: italic;">${escapeHtml(value.substring(0, 50))}...</span>`;
+            } else if (value.startsWith('Object')) {
+                valueHtml = `<span style="color: #cbd5e1; font-style: italic;">${escapeHtml(value.substring(0, 50))}...</span>`;
+            } else {
+                valueHtml = `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
+            }
+            
+            return `<div style="margin: 6px 0; padding: 4px 8px; background: rgba(15, 23, 42, 0.3); border-radius: 4px; display: flex; align-items: flex-start;">
+                <span style="color: #d8b4fe; font-weight: 600; min-width: 180px; word-break: break-word;">${escapeHtml(key)}</span>
+                <span style="color: #cbd5e1; margin: 0 12px; flex-shrink: 0;">:</span>
+                <span style="flex: 1; word-break: break-word;">${valueHtml}${comma}</span>
+            </div>`;
         }
 
         window.parseAgentLogs = parseAgentLogs;
