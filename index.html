@@ -118,16 +118,15 @@
         </div>
     </div>
 
-    <div id="jsonModal" class="fixed inset-0 bg-gray-900 bg-opacity-50 hidden items-center justify-center z-50 p-4" onclick="if(event.target === this) this.classList.add('hidden')">
-        <div class="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col">
-            <div class="flex justify-between items-center p-4 border-b">
-                <h3 class="font-bold text-gray-800">Message Detail</h3>
-                <button onclick="document.getElementById('jsonModal').classList.add('hidden')" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+    <!-- JSON Viewer Modal - Full Screen -->
+    <div id="jsonModal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50" style="padding: 0; margin: 0;">
+        <div style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 40;" onclick="document.getElementById('jsonModal').classList.add('hidden')"></div>
+        <div style="position: fixed; inset: 20px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; display: flex; flex-direction: column; z-index: 50; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);">
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid #334155; flex-shrink: 0;">
+                <h3 style="font-size: 18px; font-weight: 700; color: #f1f5f9;">Message Detail</h3>
+                <button onclick="document.getElementById('jsonModal').classList.add('hidden')" style="background: none; border: none; font-size: 24px; color: #94a3b8; cursor: pointer; padding: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;">×</button>
             </div>
-            <div class="p-4 overflow-auto bg-slate-50 font-mono text-xs" id="jsonModalContent"></div>
-            <div class="p-3 border-t bg-gray-50 flex justify-end">
-                <button onclick="document.getElementById('jsonModal').classList.add('hidden')" class="px-4 py-2 bg-white border rounded hover:bg-gray-50 text-sm font-medium">Close</button>
-            </div>
+            <div id="jsonModalContent" style="flex: 1; overflow: auto; padding: 20px; font-family: 'Monaco', 'Courier New', monospace; font-size: 12px;"></div>
         </div>
     </div>
 
@@ -1492,6 +1491,10 @@
             
             document.getElementById('jsonModalContent').innerHTML = html;
             document.getElementById('jsonModal').classList.remove('hidden');
+            
+            // Ensure the modal content is scrollable
+            document.getElementById('jsonModalContent').style.maxHeight = 'none';
+            document.getElementById('jsonModalContent').style.height = 'auto';
         }
 
         function renderPrettyJson(obj, depth = 0) {
@@ -1689,46 +1692,6 @@
             return html;
         }
 
-        function renderArrayValue(value) {
-            const innerMatch = value.match(/\[(.*)\]$/s);
-            if (!innerMatch) {
-                return `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
-            }
-            
-            const inner = innerMatch[1].trim();
-            if (!inner) {
-                return `<span style="color: #cbd5e1;">[]</span>`;
-            }
-            
-            const items = parseRustFields(inner);
-            const count = items.length;
-            
-            let html = `<div style="color: #cbd5e1; margin-top: 4px;">
-                <div style="padding: 6px; background: rgba(51, 65, 85, 0.4); border-radius: 3px; margin-bottom: 4px;">
-                    <span style="color: #60a5fa; font-weight: 600;">Array</span> <span style="color: #a78bfa;">[${count} items]</span>
-                </div>`;
-            
-            if (count <= 5) {
-                html += `<div style="padding-left: 12px; border-left: 2px solid #334155;">`;
-                items.forEach((item, idx) => {
-                    html += `<div style="margin: 4px 0; color: #cbd5e1;">${renderRustValue(item.trim())}</div>`;
-                });
-                html += `</div>`;
-            } else {
-                html += `<div style="padding: 6px; background: rgba(51, 65, 85, 0.2); border-radius: 3px; color: #94a3b8; font-size: 0.9em;">
-                    Showing first 5 of ${count} items
-                </div>`;
-                html += `<div style="padding-left: 12px; border-left: 2px solid #334155;">`;
-                items.slice(0, 5).forEach((item, idx) => {
-                    html += `<div style="margin: 4px 0; color: #cbd5e1;">${renderRustValue(item.trim())}</div>`;
-                });
-                html += `</div>`;
-            }
-            
-            html += `</div>`;
-            return html;
-        }
-
         function renderObjectValue(value) {
             const innerMatch = value.match(/\{(.*)\}$/s);
             if (!innerMatch) {
@@ -1742,48 +1705,101 @@
             
             const fields = parseRustFields(inner);
             const count = fields.length;
+            const uniqueId = 'obj_' + Math.random().toString(36).substr(2, 9);
             
-            let html = `<div style="color: #cbd5e1; margin-top: 4px;">
-                <div style="padding: 6px; background: rgba(51, 65, 85, 0.4); border-radius: 3px; margin-bottom: 4px;">
-                    <span style="color: #60a5fa; font-weight: 600;">Object</span> <span style="color: #a78bfa;">{${count} fields}</span>
-                </div>`;
+            let html = `<div style="color: #cbd5e1; margin-top: 4px;">`;
             
-            if (count <= 5) {
-                html += `<div style="padding-left: 12px; border-left: 2px solid #334155;">`;
+            // Header with expand/collapse toggle
+            html += `<div style="display: flex; align-items: center; gap: 8px; padding: 8px; background: rgba(51, 65, 85, 0.6); border-radius: 3px; margin-bottom: 8px; cursor: pointer;" onclick="document.getElementById('${uniqueId}_content').style.display = document.getElementById('${uniqueId}_content').style.display === 'none' ? 'block' : 'none'; this.querySelector('[data-toggle]').textContent = this.querySelector('[data-toggle]').textContent === '▼' ? '▶' : '▼';">
+                <span data-toggle style="color: #a78bfa; font-weight: 600; user-select: none;">▼</span>
+                <span style="color: #60a5fa; font-weight: 600;">Object</span>
+                <span style="color: #a78bfa;">{${count} fields}</span>
+            </div>`;
+            
+            // Content that can be toggled
+            html += `<div id="${uniqueId}_content" style="padding-left: 12px; border-left: 2px solid #334155;">`;
+            
+            if (count <= 3) {
+                // Always show small objects
                 fields.forEach((field, idx) => {
                     const colonIdx = field.indexOf(':');
                     if (colonIdx > -1) {
                         const k = field.substring(0, colonIdx).trim();
                         const v = field.substring(colonIdx + 1).trim();
-                        html += `<div style="margin: 4px 0; display: flex; gap: 8px; align-items: flex-start;">
-                            <span style="color: #d8b4fe; min-width: 180px; flex-shrink: 0; word-break: break-word;">${escapeHtml(k)}</span>
-                            <span style="color: #cbd5e1;">:</span>
-                            <div style="flex: 1; word-break: break-word;">${renderRustValue(v)}</div>
+                        html += `<div style="margin: 8px 0; padding: 8px; background: rgba(15, 23, 42, 0.7); border-radius: 4px; border-left: 2px solid #475569;">
+                            <div style="display: flex; gap: 8px; align-items: flex-start; margin-bottom: 4px;">
+                                <span style="color: #d8b4fe; font-weight: 500; min-width: 180px; flex-shrink: 0; word-break: break-word;">${escapeHtml(k)}</span>
+                                <span style="color: #cbd5e1;">:</span>
+                            </div>
+                            <div style="margin-left: 20px;">${renderRustValue(v)}</div>
                         </div>`;
                     }
                 });
-                html += `</div>`;
             } else {
-                html += `<div style="padding: 6px; background: rgba(51, 65, 85, 0.2); border-radius: 3px; color: #94a3b8; font-size: 0.9em;">
-                    Showing first 5 of ${count} fields
-                </div>`;
-                html += `<div style="padding-left: 12px; border-left: 2px solid #334155;">`;
-                fields.slice(0, 5).forEach((field, idx) => {
+                // Show all fields with nice formatting for large objects
+                fields.forEach((field, idx) => {
                     const colonIdx = field.indexOf(':');
                     if (colonIdx > -1) {
                         const k = field.substring(0, colonIdx).trim();
                         const v = field.substring(colonIdx + 1).trim();
-                        html += `<div style="margin: 4px 0; display: flex; gap: 8px; align-items: flex-start;">
-                            <span style="color: #d8b4fe; min-width: 180px; flex-shrink: 0; word-break: break-word;">${escapeHtml(k)}</span>
-                            <span style="color: #cbd5e1;">:</span>
-                            <div style="flex: 1; word-break: break-word;">${renderRustValue(v)}</div>
+                        const bgColor = idx % 2 === 0 ? 'rgba(15, 23, 42, 0.4)' : 'rgba(30, 41, 59, 0.4)';
+                        html += `<div style="margin: 6px 0; padding: 10px; background: ${bgColor}; border-radius: 3px; border-left: 3px solid ${idx % 2 === 0 ? '#475569' : '#64748b'};">
+                            <div style="display: flex; gap: 8px; align-items: flex-start; margin-bottom: 4px;">
+                                <span style="color: #d8b4fe; font-weight: 500; min-width: 200px; flex-shrink: 0; word-break: break-word;">${escapeHtml(k)}</span>
+                                <span style="color: #cbd5e1; flex-shrink: 0;">:</span>
+                            </div>
+                            <div style="margin-left: 20px; word-break: break-word;">${renderRustValue(v)}</div>
                         </div>`;
                     }
                 });
-                html += `</div>`;
             }
             
-            html += `</div>`;
+            html += `</div></div>`;
+            return html;
+        }
+
+        function renderArrayValue(value) {
+            const innerMatch = value.match(/\[(.*)\]$/s);
+            if (!innerMatch) {
+                return `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
+            }
+            
+            const inner = innerMatch[1].trim();
+            if (!inner) {
+                return `<span style="color: #cbd5e1;">[]</span>`;
+            }
+            
+            const items = parseRustFields(inner);
+            const count = items.length;
+            const uniqueId = 'arr_' + Math.random().toString(36).substr(2, 9);
+            
+            let html = `<div style="color: #cbd5e1; margin-top: 4px;">`;
+            
+            // Header with expand/collapse toggle
+            html += `<div style="display: flex; align-items: center; gap: 8px; padding: 8px; background: rgba(51, 65, 85, 0.6); border-radius: 3px; margin-bottom: 8px; cursor: pointer;" onclick="document.getElementById('${uniqueId}_content').style.display = document.getElementById('${uniqueId}_content').style.display === 'none' ? 'block' : 'none'; this.querySelector('[data-toggle]').textContent = this.querySelector('[data-toggle]').textContent === '▼' ? '▶' : '▼';">
+                <span data-toggle style="color: #a78bfa; font-weight: 600; user-select: none;">▼</span>
+                <span style="color: #60a5fa; font-weight: 600;">Array</span>
+                <span style="color: #a78bfa;">[${count} items]</span>
+            </div>`;
+            
+            // Content that can be toggled
+            html += `<div id="${uniqueId}_content" style="padding-left: 12px; border-left: 2px solid #334155;">`;
+            
+            if (count <= 5) {
+                items.forEach((item, idx) => {
+                    html += `<div style="margin: 4px 0; padding: 6px 8px; background: rgba(15, 23, 42, 0.5); border-radius: 3px; border-left: 2px solid #475569; color: #cbd5e1;">[${idx}] ${renderRustValue(item.trim())}</div>`;
+                });
+            } else {
+                // Show first 10, then message about rest
+                items.slice(0, 10).forEach((item, idx) => {
+                    html += `<div style="margin: 4px 0; padding: 6px 8px; background: rgba(15, 23, 42, 0.5); border-radius: 3px; border-left: 2px solid #475569; color: #cbd5e1;">[${idx}] ${renderRustValue(item.trim())}</div>`;
+                });
+                html += `<div style="margin: 12px 0; padding: 10px; background: rgba(59, 130, 246, 0.1); border-radius: 3px; border-left: 3px solid #3b82f6; color: #60a5fa; font-style: italic;">
+                    ... and ${count - 10} more items
+                </div>`;
+            }
+            
+            html += `</div></div>`;
             return html;
         }
 
