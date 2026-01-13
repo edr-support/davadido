@@ -1,50 +1,519 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Datto AV Log Analyzer</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/pako@2.0.3/dist/pako.min.js"></script>
     <style>
-        .tab-btn.active { border-bottom: 2px solid #3b82f6; color: #1e40af; }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+            color: #1f2937;
+        }
+        .modal-backdrop {
+            transition: opacity 0.3s ease;
+        }
+        .modal-content {
+            transform: translateY(0);
+            transition: transform 0.3s ease;
+        }
+        #exclusion-table-container th {
+            position: sticky;
+            top: 0;
+            background-color: #e5e7eb;
+            z-index: 10;
+        }
+
+        .tabs { display: flex; gap: 0.5rem; border-bottom: 1px solid #e6edf3; margin-bottom: 1rem; }
+        .tab-btn {
+            padding: 0.5rem 0.75rem;
+            border-radius: 0.5rem 0.5rem 0 0;
+            background: transparent;
+            border: 1px solid transparent;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .tab-btn.active {
+            background: white;
+            border-color: #e6edf3;
+            border-bottom-color: white;
+            box-shadow: 0 2px 8px rgba(15,23,42,0.04);
+        }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+
+        .app-container { max-width: 1200px; }
+        .table-wrap { width: 100%; overflow-x: auto; }
+
+        .pg-btn { padding: 6px 10px; border-radius: 6px; border: 1px solid #d1d5db; background: white; cursor: pointer; margin-right:6px; }
+        .pg-btn.active { background: #eef2ff; border-color: #c7d2fe; }
+        .pg-nav { display:flex; gap:8px; align-items:center; }
     </style>
 </head>
-<body class="bg-slate-50 p-8">
-    <div class="max-w-7xl mx-auto bg-white rounded-xl shadow-lg p-6">
-        <div class="mb-8 p-6 border-2 border-dashed border-slate-200 rounded-lg text-center">
-            <input type="file" id="fileInput" class="hidden" onchange="handleFile(event)">
-            <label for="fileInput" class="cursor-pointer bg-blue-600 text-white px-6 py-2 rounded-lg font-bold">Upload Log Archive (.gz)</label>
-        </div>
+<body class="p-4 sm:p-8 min-h-screen">
+    <div id="app" class="mx-auto bg-white shadow-xl rounded-xl p-6 sm:p-10 app-container">
 
-        <div class="tabs flex gap-4 border-b mb-4">
-            <button class="tab-btn active p-2 font-bold" onclick="switchTab('agent-logs')">Agent Logs</button>
-            <button class="tab-btn p-2 font-bold" onclick="switchTab('scan-results')">Scan Results</button>
-            <button class="tab-btn p-2 font-bold" onclick="switchTab('exclusions')">Exclusions</button>
-        </div>
+        <h1 class="text-3xl sm:text-4xl font-extrabold text-blue-800 mb-6 border-b pb-3">
+            Datto AV Log Analyzer
+        </h1>
 
-        <div id="agent-logs" class="tab-panel">
-            <div class="overflow-x-auto">
-                <table class="w-full text-left border-collapse">
-                    <thead><tr class="bg-slate-100 text-xs uppercase font-bold text-slate-600">
-                        <th class="p-2">Timestamp</th><th class="p-2">Level</th><th class="p-2">Module</th><th class="p-2">Message</th>
-                    </tr></thead>
-                    <tbody id="agent-table-body"></tbody>
-                </table>
-            </div>
-        </div>
-        </div>
+        <p class="text-gray-600 mb-6">
+            Upload your compressed log archive (`.gz`) below. The analysis is performed entirely in your browser.
+        </p>
 
-    <div id="jsonModal" class="hidden fixed inset-0 bg-slate-900/80 flex items-center justify-center z-50">
-        <div class="bg-[#0f172a] w-11/12 h-5/6 rounded-xl flex flex-col shadow-2xl">
-            <div class="p-4 border-b border-slate-700 flex justify-between items-center">
-                <h3 class="text-white font-bold">Payload Detail</h3>
-                <button onclick="document.getElementById('jsonModal').classList.add('hidden')" class="text-slate-400 text-2xl">&times;</button>
-            </div>
-            <div id="jsonModalContent" class="p-6 overflow-auto font-mono text-sm leading-relaxed"></div>
+        <div class="flex flex-col gap-4 p-4 bg-blue-50 rounded-lg border border-blue-200 mb-8">
+            <label for="logFileInput" class="text-sm font-semibold text-gray-700">1. Select Log Archive (.gz)</label>
+            <input 
+                type="file" 
+                id="logFileInput" 
+                accept=".gz"
+                onchange="handleFileSelect(event)"
+                class="block w-full text-sm text-gray-900 border border-gray-300 rounded-lg cursor-pointer bg-white focus:outline-none file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-500 file:text-white hover:file:bg-blue-600"
+            >
+
+            <label for="pathFilterInput" class="text-sm font-semibold text-gray-700">2. Optional: Filter Scan Logs by Path Keyword (e.g., 'C:\Program Files')</label>
+            <input 
+                type="text" 
+                id="pathFilterInput" 
+                value="" 
+                placeholder="Leave empty to analyze all scan paths"
+                class="block w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+            >
+            
+            <button 
+                onclick="processLogs()" 
+                id="processButton" 
+                disabled 
+                class="w-full px-6 py-3 mt-2 text-white font-bold rounded-lg transition duration-150 shadow-md disabled:opacity-60 disabled:cursor-not-allowed"
+                style="background-color: #10b981;"
+            >
+                Start Analysis
+            </button>
+        </div>
+        
+        <div id="statusMessage" class="text-center text-sm font-medium text-gray-500 mb-4 h-5"></div>
+
+        <div id="results" class="space-y-8">
+            <p class="text-center text-gray-400 p-8 border-2 border-dashed rounded-lg">
+                Upload a file and click "Start Analysis" to view the statistics.
+            </p>
         </div>
     </div>
 
-    <script src="parser.js"></script>
-    <script src="ui.js"></script>
+    <div id="breakdownModal" class="modal-backdrop hidden fixed inset-0 bg-gray-900 bg-opacity-75 z-50 overflow-y-auto" onclick="handleModalClick(event)">
+        <div class="relative w-full max-w-4xl mx-auto my-10 bg-white rounded-lg shadow-2xl p-6 modal-content">
+            <div class="flex justify-between items-start border-b pb-3 mb-4">
+                <h2 id="breakdownTitle" class="text-xl font-extrabold text-blue-800"></h2>
+                <button onclick="hideBreakdown()" class="text-gray-400 hover:text-gray-600">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <div id="breakdownContent" class="space-y-3 max-h-[80vh] overflow-y-auto"></div>
+        </div>
+    </div>
+
+    <div id="jsonModal" class="fixed inset-0 bg-gray-900 bg-opacity-50 hidden items-center justify-center z-50 p-4" onclick="if(event.target === this) this.classList.add('hidden')">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col">
+            <div class="flex justify-between items-center p-4 border-b">
+                <h3 class="font-bold text-gray-800">Message Detail</h3>
+                <button onclick="document.getElementById('jsonModal').classList.add('hidden')" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+            </div>
+            <div class="p-4 overflow-auto bg-slate-50 font-mono text-xs" id="jsonModalContent"></div>
+            <div class="p-3 border-t bg-gray-50 flex justify-end">
+                <button onclick="document.getElementById('jsonModal').classList.add('hidden')" class="px-4 py-2 bg-white border rounded hover:bg-gray-50 text-sm font-medium">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        let g_analysisStats = {};
+
+        const ui = {
+            input: document.getElementById('logFileInput'),
+            filter: document.getElementById('pathFilterInput'),
+            button: document.getElementById('processButton'),
+            results: document.getElementById('results'),
+            status: document.getElementById('statusMessage'),
+            modal: document.getElementById('breakdownModal')
+        };
+
+        window.onload = () => {
+             if (typeof pako === 'undefined') {
+                ui.status.textContent = "Error: Decompression library (pako) failed to load.";
+                ui.button.disabled = true;
+             }
+        };
+
+        function updateStatus(message, isError = false) {
+            ui.status.textContent = message;
+            ui.status.className = `text-center text-sm font-medium mb-4 h-5 ${isError ? 'text-red-600' : 'text-gray-500'}`;
+        }
+
+        function handleFileSelect(event) {
+            if (event.target.files.length > 0) {
+                ui.button.disabled = false;
+                ui.button.style.opacity = 1;
+                ui.button.style.backgroundColor = '#10b981';
+                updateStatus(`File selected: ${event.target.files[0].name}`);
+            } else {
+                ui.button.disabled = true;
+                ui.button.style.opacity = 0.6;
+                ui.button.style.backgroundColor = '#10b981';
+                updateStatus('');
+            }
+        }
+
+        async function processLogs() {
+            const file = ui.input.files[0];
+            const filterKeyword = ui.filter.value.trim();
+            if (!file) return;
+            
+            ui.button.disabled = true;
+            ui.button.textContent = "Processing...";
+            try {
+                const buffer = await readFileAsArrayBuffer(file);
+                const decompressed = pako.inflate(buffer);
+                const logContent = new TextDecoder('utf-8').decode(decompressed);
+                const stats = parseAndAnalyze(logContent, filterKeyword);
+                g_analysisStats = stats;
+                displayResults(stats);
+                updateStatus(`Analysis complete!`);
+            } catch (error) {
+                updateStatus(`An error occurred: ${error.message}`, true);
+            } finally {
+                ui.button.disabled = false;
+                ui.button.textContent = "Start Analysis";
+            }
+        }
+
+        function readFileAsArrayBuffer(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target.result);
+                reader.onerror = (e) => reject(e.target.error);
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        const LOG_REGEX = /^\[(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}\.\d{3})\].*?\[thread id:\s*(\d+)\][^']+'([^']+?)'/;
+        const SCAN_KEYWORDS = ['BaseScan', 'LocalScanner'];
+        const EXCLUSION_REGEX = /^\[(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}\.\d{3})\].*?\[Configuration\]\s+(Process|File and folder)\s+exclusions:\s*(?:\[(.*?)\]|(.+?))\s*$/gims;
+        const DNS_SCANNED_REGEX = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\].*?\[DnsSecure\].*?Detected domain[:\s-]*([^\r\n]+)/gim;
+        const DNS_GENERIC_REGEX = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\].*?\[NetProtection\].*?Blocked process[:\s-]*([^\r\n]+)/gim;
+        const NET_PROCESS_NOT_TRUSTED_REGEX = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\].*?\[NetProtection\].*?Process \[pid=(\d+)\] is not trusted, intercepting/gim;
+        const NET_HTTP_INTERCEPTION_REGEX = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\].*?\[NetProtection\].*?TCP connection for \[pid=(\d+)\]: Starting HTTP interception/gim;
+        const NET_HTTP2_INTERCEPTION_REGEX = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\].*?\[NetProtection\].*?TCP connection for \[pid=(\d+)\]: Starting HTTP2 interception/gim;
+        const NET_TLS_HANDSHAKE_REGEX = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\].*?\[NetProtection\].*?\[TlsHandshake\].*?TlsHandshake client callback for \[tcpconnid=(\d+)\] to \[([^\]]+)\] took (\d+)m?ms and returned (\w+)/gim;
+        const NET_PROCESS_CONNECTION_REGEX = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\].*?\[NetProtection\].*?Process \[pid=(\d+)\] \[path=([^\]]+)\] is initiating a connection/gim;
+
+        function extractFileInfo(filePath) {
+            const normalizedPath = filePath.replace(/\\/g, '/');
+            const parts = normalizedPath.split('/').filter(p => p && p !== '?'); 
+            const pathParts = parts.slice(0, -1);
+            const path = pathParts.join('/') + (pathParts.length > 0 ? '/' : '');
+            const fileName = parts[parts.length - 1] || '';
+            const extensionMatch = fileName.match(/\.([^\.]+)$/);
+            return { path, extension: extensionMatch ? extensionMatch[1] : 'N/A' };
+        }
+
+        function indexRawData(data) {
+            const map = {
+                topPaths: new Map(), topFiles: new Map(), topThreadIds: new Map(), topExtensions: new Map(),
+                topFilesPerExtension: new Map(), topPathsPerExtension: new Map(), topThreadIdsPerPath: new Map(),
+                topScansPerFile: new Map(), topScansPerFilePerThreadId: new Map()
+            };
+            const keyFns = {
+                topPaths: i => i.path, topFiles: i => i.filePath, topThreadIds: i => i.threadId, topExtensions: i => i.extension,
+                topFilesPerExtension: i => `${i.extension} | ${i.filePath}`, topPathsPerExtension: i => `${i.extension} | ${i.path}`,
+                topThreadIdsPerPath: i => `${i.path} | ${i.threadId}`, topScansPerFile: i => i.filePath, topScansPerFilePerThreadId: i => `${i.filePath} | ${i.threadId}`
+            };
+            data.forEach(item => {
+                for (const [keyName, keyFn] of Object.entries(keyFns)) {
+                    const key = keyFn(item);
+                    if (!map[keyName].has(key)) map[keyName].set(key, []);
+                    map[keyName].get(key).push(item);
+                }
+            });
+            return map;
+        }
+
+        function parseAndAnalyze(logContent, filterKeyword) {
+            const exclusionMap = new Map();
+            let m;
+            while ((m = EXCLUSION_REGEX.exec(logContent)) !== null) {
+                const ts = m[1], type = (m[2] || '').trim(), multiline = m[3], single = m[4];
+                let ex = [];
+                if (multiline && multiline.trim()) ex = multiline.split(/\r?\n/).map(l => l.replace(/^\s*[-•\*]\s*/, '').trim()).filter(Boolean);
+                else if (single && single.trim()) ex = [single.trim()];
+                if (!exclusionMap.has(ts)) exclusionMap.set(ts, { processes: [], files: [] });
+                const entry = exclusionMap.get(ts);
+                if (type.toLowerCase().includes('process')) ex.forEach(e => { if(!entry.processes.includes(e)) entry.processes.push(e); });
+                else ex.forEach(e => { if(!entry.files.includes(e)) entry.files.push(e); });
+            }
+
+            const dnsEntries = [];
+            const netProtectionEntries = { processNotTrusted: [], httpInterception: [], http2Interception: [], tlsHandshake: [], processConnection: [] };
+            let d;
+            while ((d = DNS_SCANNED_REGEX.exec(logContent)) !== null) dnsEntries.push({ timestamp: d[1], category: 'DNS Detected', value: d[2].trim() });
+            while ((d = DNS_GENERIC_REGEX.exec(logContent)) !== null) dnsEntries.push({ timestamp: d[1], category: 'Blocked Process', value: d[2].trim() });
+            while ((d = NET_PROCESS_NOT_TRUSTED_REGEX.exec(logContent)) !== null) netProtectionEntries.processNotTrusted.push({ timestamp: d[1], pid: d[2] });
+            while ((d = NET_HTTP_INTERCEPTION_REGEX.exec(logContent)) !== null) netProtectionEntries.httpInterception.push({ timestamp: d[1], pid: d[2] });
+            while ((d = NET_HTTP2_INTERCEPTION_REGEX.exec(logContent)) !== null) netProtectionEntries.http2Interception.push({ timestamp: d[1], pid: d[2] });
+            while ((d = NET_TLS_HANDSHAKE_REGEX.exec(logContent)) !== null) netProtectionEntries.tlsHandshake.push({ timestamp: d[1], tcpconnid: d[2], domain: d[3], timeMs: d[4], returnValue: d[5] });
+            while ((d = NET_PROCESS_CONNECTION_REGEX.exec(logContent)) !== null) netProtectionEntries.processConnection.push({ timestamp: d[1], pid: d[2], path: d[3] });
+
+            const lines = logContent.split(/\r?\n/);
+            const scanData = [];
+            const normalizedFilter = (filterKeyword || '').toLowerCase();
+            for (const line of lines) {
+                if (SCAN_KEYWORDS.every(k => line.includes(k))) {
+                    const match = line.match(LOG_REGEX);
+                    if (match) {
+                        const filePath = match[3].trim();
+                        if (normalizedFilter && !filePath.toLowerCase().includes(normalizedFilter)) continue;
+                        const { path, extension } = extractFileInfo(filePath);
+                        scanData.push({ filePath, scanTime: 1, threadId: match[2].trim(), path, extension, timestamp: match[1].trim() });
+                    }
+                }
+            }
+
+            let aggregatedExclusions = Array.from(exclusionMap.entries()).map(([ts, data]) => ({
+                timestamp: ts, processExclusions: [...new Set(data.processes)], fileFolderExclusions: [...new Set(data.files)]
+            })).filter(i => i.processExclusions.length > 0 || i.fileFolderExclusions.length > 0).sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+            const rawDataIndex = indexRawData(scanData);
+            const aggregatePidCounts = (arr) => {
+                const counts = new Map();
+                arr.forEach(i => counts.set(i.pid, (counts.get(i.pid) || 0) + 1));
+                return Array.from(counts.entries()).map(([pid, count]) => ({ pid, count })).sort((a,b) => b.count - a.count);
+            };
+
+            const aggregateTls = (arr) => {
+                const dom = new Map(), ret = new Map();
+                arr.forEach(i => { dom.set(i.domain, (dom.get(i.domain)||0)+1); ret.set(i.returnValue, (ret.get(i.returnValue)||0)+1); });
+                return { byDomain: Array.from(dom.entries()).map(([domain, count]) => ({ domain, count })).sort((a,b)=>b.count-a.count), byReturnValue: Array.from(ret.entries()).map(([returnValue, count]) => ({ returnValue, count })).sort((a,b)=>b.count-a.count), allEntries: arr };
+            };
+
+            const aggregateConn = (arr) => {
+                const pathC = new Map(), pidC = new Map();
+                arr.forEach(i => { pathC.set(i.path, (pathC.get(i.path)||0)+1); pidC.set(i.pid, (pidC.get(i.pid)||0)+1); });
+                return { byPath: Array.from(pathC.entries()).map(([path, count]) => ({ path, count })).sort((a,b)=>b.count-a.count), byPid: Array.from(pidC.entries()).map(([pid, count]) => ({ pid, count })), allEntries: arr };
+            };
+
+            return {
+                totalEntries: scanData.length, exclusionData: aggregatedExclusions, rawDataIndex, dnsSecure: dnsEntries,
+                netProtection: { processNotTrusted: aggregatePidCounts(netProtectionEntries.processNotTrusted), httpInterception: aggregatePidCounts(netProtectionEntries.httpInterception), http2Interception: aggregatePidCounts(netProtectionEntries.http2Interception), tlsHandshake: aggregateTls(netProtectionEntries.tlsHandshake), processConnection: aggregateConn(netProtectionEntries.processConnection), raw: netProtectionEntries },
+                topPaths: aggregateStats(scanData, i => i.path), topFiles: aggregateStats(scanData, i => i.filePath), topThreadIds: aggregateStats(scanData, i => i.threadId), topExtensions: aggregateStats(scanData, i => i.extension), topFilesPerExtension: aggregateStats(scanData, i => `${i.extension} | ${i.filePath}`), topPathsPerExtension: aggregateStats(scanData, i => `${i.extension} | ${i.path}`), topThreadIdsPerPath: aggregateStats(scanData, i => `${i.path} | ${i.threadId}`), topScansPerFile: aggregateStats(scanData, i => i.filePath), topScansPerFilePerThreadId: aggregateStats(scanData, i => `${i.filePath} | ${i.threadId}`)
+            };
+        }
+
+        function aggregateStats(data, keyFn) {
+            const map = new Map();
+            for (const item of data) {
+                const key = keyFn(item);
+                const current = map.get(key) || { count: 0 };
+                current.count += 1;
+                map.set(key, current);
+            }
+            return Array.from(map.entries()).map(([key, v]) => ({ key, ...v })).sort((a, b) => b.count - a.count);
+        }
+
+        function escapeKeyForHtml(key) { return key.replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
+        function escapeHtml(s) { if (!s && s !== '') return ''; return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+        function limitString(s, limit = 100) { return s.length > limit ? s.substring(0, limit) + '...' : s; }
+
+        function renderExclusionList(exclusions, isProcess) {
+            if (!exclusions || exclusions.length === 0) return `<span class="italic text-gray-400">None logged</span>`;
+            const listClass = isProcess ? 'text-red-700' : 'text-gray-900';
+            const uniqueId = `list-${Math.random().toString(36).substring(2, 9)}`;
+            if (exclusions.length <= 5) return `<ul class="list-disc list-inside space-y-1">${exclusions.map(e => `<li class="break-all ${listClass}">${escapeHtml(e)}</li>`).join('')}</ul>`;
+            const visible = exclusions.slice(0, 5), hiddenCount = exclusions.length - 5;
+            return `<div id="${uniqueId}"><ul class="list-disc list-inside space-y-1 mb-2">${visible.map(e => `<li class="break-all ${listClass}">${escapeHtml(e)}</li>`).join('')}</ul><div id="hidden-${uniqueId}" class="hidden"><ul class="list-disc list-inside space-y-1 mb-2">${exclusions.slice(5).map(e => `<li class="break-all ${listClass}">${escapeHtml(e)}</li>`).join('')}</ul></div><button onclick="toggleExclusionList('${uniqueId}', this, ${hiddenCount})" class="text-blue-600 hover:text-blue-800 text-xs font-semibold underline">+ Show ${hiddenCount} more</button></div>`;
+        }
+        function toggleExclusionList(id, btn, count) {
+            const h = document.getElementById(`hidden-${id}`);
+            if (h.classList.contains('hidden')) { h.classList.remove('hidden'); btn.textContent = '- Hide'; }
+            else { h.classList.add('hidden'); btn.textContent = `+ Show ${count} more`; }
+        }
+        window.toggleExclusionList = toggleExclusionList;
+
+        const PAGINATORS = {};
+        function renderPaginatedTable(opts) {
+            const {id, title, columnsHtml, rowsArray, defaultPageSize, breakdownFn} = opts;
+            PAGINATORS[id] = { data: rowsArray, pageSize: defaultPageSize || 25, currentPage: 1, breakdownFn, id };
+            const html = `<div class="bg-gray-50 p-4 rounded-xl shadow-inner mb-3"><h3 class="text-xl font-bold text-gray-700 mb-4 border-b pb-2">${escapeHtml(title)}</h3>${rowsArray.length === 0 ? `<p class="text-center text-gray-500 py-4">No data found.</p>` : `<div class="table-wrap"><table class="min-w-full divide-y divide-gray-200" id="${id}-table"><thead class="bg-gray-200"><tr>${columnsHtml}</tr></thead><tbody id="${id}-tbody" class="bg-white divide-y divide-gray-100"></tbody></table></div><div class="flex items-center justify-between mt-3"><div class="flex items-center gap-2"><span class="text-sm text-gray-600">Rows:</span><button class="pg-btn" onclick="changePageSize('${id}', 10)">10</button><button class="pg-btn active" onclick="changePageSize('${id}', 25)">25</button></div><div class="pg-nav"><span id="${id}-info" class="text-sm text-gray-600"></span><button class="pg-btn" id="${id}-prev" onclick="changePage('${id}', -1)" disabled>Prev</button><button class="pg-btn" id="${id}-next" onclick="changePage('${id}', 1)" disabled>Next</button></div></div>`}</div>`;
+            const container = document.createElement('div');
+            container.innerHTML = html;
+            if (rowsArray.length > 0) setTimeout(() => renderTablePage(id, 1), 0);
+            return container.innerHTML;
+        }
+        
+        function renderTablePage(id, page) {
+            const s = PAGINATORS[id]; if (!s) return;
+            s.currentPage = page;
+            const tbody = document.getElementById(`${id}-tbody`), info = document.getElementById(`${id}-info`), prev = document.getElementById(`${id}-prev`), next = document.getElementById(`${id}-next`);
+            const start = (s.currentPage - 1) * s.pageSize, end = start + s.pageSize, data = s.data.slice(start, end), total = s.data.length, pages = Math.ceil(total / s.pageSize);
+            tbody.innerHTML = data.map(row => {
+                const onClick = s.breakdownFn ? `onclick="showBreakdown('${s.breakdownFn}', '${escapeKeyForHtml(row.key)}')"` : '';
+                return `<tr class="${s.breakdownFn ? 'hover:bg-blue-50 cursor-pointer' : ''} transition duration-100" ${onClick}>${row.columns.map(col => `<td class="p-3 text-sm text-gray-700 break-words">${col}</td>`).join('')}</tr>`;
+            }).join('');
+            info.textContent = `Showing ${Math.min(total, start + 1)}-${Math.min(total, end)} of ${total}`;
+            prev.disabled = s.currentPage === 1; next.disabled = s.currentPage === pages || total === 0;
+        }
+
+        function changePage(id, delta) {
+            const s = PAGINATORS[id];
+            const newPage = s.currentPage + delta;
+            if (newPage >= 1 && newPage <= Math.ceil(s.data.length / s.pageSize)) renderTablePage(id, newPage);
+        }
+
+        function changePageSize(id, size) {
+            const s = PAGINATORS[id];
+            s.pageSize = size;
+            renderTablePage(id, 1);
+        }
+        window.changePage = changePage; window.changePageSize = changePageSize;
+
+        function showBreakdown(type, key) {
+            const titleEl = document.getElementById('breakdownTitle'), contentEl = document.getElementById('breakdownContent');
+            const stats = g_analysisStats;
+            let data = [], displayTitle = '';
+            const map = { topFiles: 'topFiles', topPaths: 'topPaths', topExtensions: 'topExtensions', topThreadIds: 'topThreadIds', topFilesPerExtension: 'topFilesPerExtension', topPathsPerExtension: 'topPathsPerExtension', topThreadIdsPerPath: 'topThreadIdsPerPath', topScansPerFile: 'topScansPerFile', topScansPerFilePerThreadId: 'topScansPerFilePerThreadId' };
+            const indexKey = map[type];
+            if (indexKey) {
+                data = stats.rawDataIndex[indexKey].get(key) || [];
+                displayTitle = `Raw Scan Entries: <span class="font-normal text-gray-600 break-all">${escapeHtml(key)}</span>`;
+                contentEl.innerHTML = data.map(i => `<div class="p-3 bg-gray-100 rounded-lg shadow-sm"><p class="font-semibold text-sm text-blue-700">${escapeHtml(i.timestamp)}</p><p class="text-xs text-gray-500">Thread ID: ${escapeHtml(i.threadId)}</p><p class="text-sm text-gray-800 break-all">${escapeHtml(i.filePath)}</p></div>`).join('') || '<p>None</p>';
+            } else if (type === 'netProcessConnection') {
+                data = stats.netProtection.raw.processConnection.filter(i => i.path === key);
+                displayTitle = `Connections: ${escapeHtml(key)}`;
+                contentEl.innerHTML = data.map(i => `<div class="p-3 bg-gray-100 rounded-lg shadow-sm"><p class="font-semibold text-sm text-blue-700">${escapeHtml(i.timestamp)}</p><p class="text-xs text-gray-500">PID: ${escapeHtml(i.pid)}</p></div>`).join('');
+            } else if (type === 'netTlsHandshake') {
+                data = stats.netProtection.raw.tlsHandshake.filter(i => i.domain === key);
+                displayTitle = `TLS: ${escapeHtml(key)}`;
+                contentEl.innerHTML = data.map(i => `<div class="p-3 bg-gray-100 rounded-lg shadow-sm"><p class="font-semibold text-sm text-blue-700">${escapeHtml(i.timestamp)}</p><p class="text-xs text-gray-500">Return: ${escapeHtml(i.returnValue)} | ${i.timeMs}ms</p></div>`).join('');
+            }
+            titleEl.innerHTML = displayTitle; ui.modal.classList.remove('hidden');
+        }
+        function hideBreakdown() { ui.modal.classList.add('hidden'); }
+        window.showBreakdown = showBreakdown; window.hideBreakdown = hideBreakdown;
+
+        function openTab(name) {
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById(name).classList.add('active');
+            document.querySelector(`.tab-btn[onclick="openTab('${name}')"]`).classList.add('active');
+        }
+        window.openTab = openTab;
+
+        function displayResults(stats) {
+            if (stats.totalEntries === 0) {
+                ui.results.innerHTML = `<div class="text-center p-12 border-2 border-red-300 border-dashed rounded-lg bg-red-50"><h3 class="text-2xl font-bold text-red-700 mb-2">No Entries Found</h3></div>`;
+                return;
+            }
+            ui.results.innerHTML = `<div class="tabs"><button class="tab-btn active" onclick="openTab('scan-stats-panel')">Scan Stats</button><button class="tab-btn" onclick="openTab('exclusions-panel')">Exclusions (${stats.exclusionData.length})</button><button class="tab-btn" onclick="openTab('dns-netprot-panel')">DNS/NetProtection</button><button class="tab-btn" onclick="openTab('agent-tab')">Agent Log Analyzer</button></div><div id="scan-stats-panel" class="tab-panel active space-y-8"></div><div id="exclusions-panel" class="tab-panel space-y-8"></div><div id="dns-netprot-panel" class="tab-panel space-y-8"></div><div id="agent-tab" class="tab-panel space-y-6"></div>`;
+
+            const scanStatsPanel = document.getElementById('scan-stats-panel');
+            let scanHtml = `<div class="p-4 bg-yellow-50 rounded-lg border border-yellow-200"><p class="text-lg font-bold text-yellow-700">Total Scans: ${stats.totalEntries.toLocaleString()}</p></div>`;
+            const renderTop = (id, title, data, kh, vh, bdt) => renderPaginatedTable({ id, title, columnsHtml: `<th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase w-3/4">${kh}</th><th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase w-1/4">${vh}</th>`, rowsArray: data.slice(0, 10).map(i => ({ key: i.key, columns: [escapeHtml(limitString(i.key, 70)), `<span class="font-mono">${i.count.toLocaleString()}</span>`] })), defaultPageSize: 10, breakdownFn: bdt });
+            scanHtml += `<div class="grid grid-cols-1 lg:grid-cols-2 gap-8"><div>${renderTop('topPaths', 'Top Paths', stats.topPaths, 'Path', 'Scans', 'topPaths')}${renderTop('topFiles', 'Top Files', stats.topFiles, 'File', 'Scans', 'topFiles')}</div><div>${renderTop('topThreadIds', 'Top Threads', stats.topThreadIds, 'Thread', 'Scans', 'topThreadIds')}${renderTop('topExtensions', 'Top Extensions', stats.topExtensions, 'Ext', 'Scans', 'topExtensions')}</div></div>`;
+            scanStatsPanel.innerHTML = scanHtml;
+
+            const exclusionPanel = document.getElementById('exclusions-panel');
+            exclusionPanel.innerHTML = renderPaginatedTable({ id: 'excl-table', title: 'Exclusion History', columnsHtml: `<th class="p-3 text-left text-xs uppercase w-[15%]">Timestamp</th><th class="p-3 text-left text-xs uppercase w-[42.5%]">Process</th><th class="p-3 text-left text-xs uppercase w-[42.5%]">File/Folder</th>`, rowsArray: stats.exclusionData.map(i => ({ key: i.timestamp, columns: [i.timestamp, renderExclusionList(i.processExclusions, true), renderExclusionList(i.fileFolderExclusions, false)] })), defaultPageSize: 10 });
+
+            const dnsPanel = document.getElementById('dns-netprot-panel');
+            let dnsHtml = `<div class="p-4 bg-green-50 border border-green-200"><p class="font-bold">DNS/NetProtection Summary</p></div>`;
+            dnsHtml += renderPaginatedTable({ id: 'dns-table', title: 'DNS Logs', columnsHtml: `<th class="p-3 text-left text-xs uppercase w-[20%]">Timestamp</th><th class="p-3 text-left text-xs uppercase w-[20%]">Category</th><th class="p-3 text-left text-xs uppercase w-[60%]">Value</th>`, rowsArray: stats.dnsSecure.map(i => ({ key: i.timestamp, columns: [i.timestamp, i.category, i.value] })), defaultPageSize: 10 });
+            dnsPanel.innerHTML = dnsHtml;
+
+            const agentPanel = document.getElementById('agent-tab');
+            agentPanel.innerHTML = `<div class="p-6 bg-white rounded-lg shadow-sm border border-gray-200"><h2 class="text-xl font-bold mb-4">Agent Log Analysis</h2><div class="flex gap-4 items-end"><div class="w-full"><label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Select agent.log</label><input type="file" id="agentInput" accept=".log,.txt" class="block w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:bg-emerald-50 file:text-emerald-700"/></div><div class="w-full md:w-1/3"><input type="text" id="agentFilter" onkeyup="filterAgentLogs()" placeholder="Search..." class="w-full px-4 py-2 border rounded-lg text-sm"></div><button onclick="parseAgentLogs()" class="bg-emerald-600 text-white font-bold py-2 px-6 rounded-lg h-10">Analyze</button></div><div id="agentStatus" class="mt-2 text-sm"></div></div><div id="agentResults" class="hidden"><div class="overflow-x-auto bg-white shadow border"><table class="min-w-full text-sm"><thead class="bg-gray-50 border-b"><tr><th class="px-4 py-3">Time</th><th class="px-4 py-3">Level</th><th class="px-4 py-3">PID</th><th class="px-4 py-3">Route</th><th class="px-4 py-3">Message</th></tr></thead><tbody id="agentLogBody"></tbody></table></div><div id="agentPagination" class="mt-4 flex justify-between text-sm text-gray-500"><span id="agentCount"></span><div class="space-x-2"><button onclick="changeAgentPage(-1)" class="px-3 py-1 border rounded">Prev</button><button onclick="changeAgentPage(1)" class="px-3 py-1 border rounded">Next</button></div></div></div>`;
+        }
+
+        // --- AGENT LOG ANALYZER LOGIC ---
+        let g_agentLogs = [], g_filteredLogs = [], g_agentPage = 0;
+        const AGENT_PAGE_SIZE = 100;
+        const AGENT_REGEX = /^\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\s+(.*)$/;
+
+        async function parseAgentLogs() {
+            const input = document.getElementById('agentInput'), status = document.getElementById('agentStatus');
+            if (!input.files.length) return;
+            try {
+                const text = await new Promise((res, rej) => { const r = new FileReader(); r.onload = e => res(e.target.result); r.onerror = rej; r.readAsText(input.files[0]); });
+                g_agentLogs = text.split(/\r?\n/).filter(l => l.trim()).map(line => {
+                    const match = line.replace(/^\s*/, '').match(AGENT_REGEX);
+                    return match ? { ts: match[1], id: match[2], host: match[3], ver: match[4], pid: match[5], lvl: match[6], route: match[7], msg: match[8] } : null;
+                }).filter(Boolean);
+                g_filteredLogs = [...g_agentLogs]; g_agentPage = 0; renderAgentTable();
+                status.textContent = `Parsed ${g_agentLogs.length} entries.`;
+                document.getElementById('agentResults').classList.remove('hidden');
+            } catch (e) { status.textContent = "Error: " + e.message; }
+        }
+
+        function filterAgentLogs() {
+            const term = document.getElementById('agentFilter').value.toLowerCase();
+            g_filteredLogs = g_agentLogs.filter(l => l.msg.toLowerCase().includes(term) || l.route.toLowerCase().includes(term) || l.lvl.toLowerCase().includes(term));
+            g_agentPage = 0; renderAgentTable();
+        }
+
+        function renderAgentTable() {
+            const tbody = document.getElementById('agentLogBody');
+            const start = g_agentPage * AGENT_PAGE_SIZE, data = g_filteredLogs.slice(start, start + AGENT_PAGE_SIZE);
+            document.getElementById('agentCount').textContent = `Showing ${start + 1}-${Math.min(start + AGENT_PAGE_SIZE, g_filteredLogs.length)} of ${g_filteredLogs.length}`;
+            tbody.innerHTML = data.map((log, idx) => {
+                let lvlClass = log.lvl === 'ERR' ? "bg-red-100 text-red-800" : log.lvl === 'WRN' ? "bg-yellow-100 text-yellow-800" : "bg-blue-50 text-blue-700";
+                const hasPayload = log.msg.includes('{') || log.msg.includes('Payload');
+                return `<tr class="hover:bg-slate-50 border-b font-mono text-xs"><td class="px-4 py-2 text-gray-500">${escapeHtml(log.ts)}</td><td class="px-4 py-2"><span class="${lvlClass} px-2 py-0.5 rounded font-bold">${log.lvl}</span></td><td class="px-4 py-2 text-gray-500">${log.pid}</td><td class="px-4 py-2 truncate max-w-[150px]">${escapeHtml(log.route.replace('agent::', ''))}</td><td class="px-4 py-2 break-all">${escapeHtml(log.msg.substring(0, 120))}${log.msg.length > 120 ? '...' : ''} ${hasPayload ? `<button onclick="viewAgentPayload(${start + idx})" class="ml-2 text-indigo-600 underline">View Data</button>` : ''}</td></tr>`;
+            }).join('');
+        }
+
+        function changeAgentPage(d) {
+            const max = Math.ceil(g_filteredLogs.length / AGENT_PAGE_SIZE) - 1;
+            g_agentPage = Math.max(0, Math.min(max, g_agentPage + d)); renderAgentTable();
+        }
+
+        /**
+         * PRETTIFIER FOR RUST DEBUG STRINGS
+         * Handles prefixes like Object, Some, Array, String, Bool, etc.
+         */
+        function prettifyRustDebug(str) {
+            let indent = 0;
+            const step = "    "; 
+            let result = "";
+            const tokens = str.split(/([\{\}\(\)\[\]\s,])/);
+
+            for (let i = 0; i < tokens.length; i++) {
+                let token = tokens[i].trim();
+                if (!token) continue;
+
+                if (token === "{" || token === "[" || token === "(") {
+                    result += token + "\n" + step.repeat(++indent);
+                } else if (token === "}" || token === "]" || token === ")") {
+                    result += "\n" + step.repeat(Math.max(0, --indent)) + token;
+                } else if (token === ",") {
+                    result += ",\n" + step.repeat(indent);
+                } else {
+                    result += token + " ";
+                }
+            }
+            return result.replace(/\s+:/g, ":").replace(/:\s+/g, ": ");
+        }
+
+        function viewAgentPayload(index) {
+            const log = g_filteredLogs[index];
+            if (!log) return;
+            const formatted = (log.msg.includes('{') || log.msg.includes('[')) ? prettifyRustDebug(log.msg) : log.msg;
+            document.getElementById('jsonModalContent').innerHTML = `<div class="mb-2 p-2 bg-blue-50 border-l-4 border-blue-400 text-blue-700 text-[10px] uppercase font-bold">Rust Debug / Structured Log</div><pre class="whitespace-pre-wrap font-mono text-xs text-gray-800">${escapeHtml(formatted)}</pre>`;
+            document.getElementById('jsonModal').classList.remove('hidden');
+        }
+
+        window.parseAgentLogs = parseAgentLogs; window.filterAgentLogs = filterAgentLogs; window.changeAgentPage = changeAgentPage; window.viewAgentPayload = viewAgentPayload;
+    </script>
 </body>
 </html>
