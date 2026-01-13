@@ -60,11 +60,11 @@
     <div id="app" class="mx-auto bg-white shadow-xl rounded-xl p-6 sm:p-10 app-container">
 
         <h1 class="text-3xl sm:text-4xl font-extrabold text-blue-800 mb-6 border-b pb-3">
-            Datto AV Log Analyzer
+            Log Analysis Suite
         </h1>
 
         <p class="text-gray-600 mb-6">
-            Upload your compressed log archive (`.gz`) below. The analysis is performed entirely in your browser.
+            Upload your compressed log archive (`.gz`) below to analyze Datto AV scans, agent logs, and system events. All analysis is performed entirely in your browser.
         </p>
 
         <div class="flex flex-col gap-4 p-4 bg-blue-50 rounded-lg border border-blue-200 mb-8">
@@ -136,6 +136,7 @@
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         let g_analysisStats = {};
+        let g_archiveLogFiles = {}; // Store extracted logs from archive: { 'agent.log': '...', 'datto-av.log': '...', etc }
 
         const ui = {
             input: document.getElementById('logFileInput'),
@@ -190,7 +191,10 @@
                 const decompressed = pako.inflate(buffer);
                 const logContent = new TextDecoder('utf-8').decode(decompressed);
                 
-                updateStatus("Log file decompressed. Analyzing data...");
+                updateStatus("Log file decompressed. Extracting logs and analyzing data...");
+
+                // Extract logs from archive for Agent analyzer
+                extractArchiveLogs(logContent);
 
                 const stats = parseAndAnalyze(logContent, filterKeyword);
                 g_analysisStats = stats;
@@ -204,6 +208,51 @@
             } finally {
                 ui.button.disabled = false;
                 ui.button.textContent = "Start Analysis";
+            }
+        }
+
+        function extractArchiveLogs(logContent) {
+            g_archiveLogFiles = {};
+            const lines = logContent.split('\n');
+            let currentLogFile = null;
+            let currentLogContent = [];
+
+            lines.forEach(line => {
+                // Detect log file headers (lines that look like file paths/names)
+                const agentMatch = line.match(/^=+\s*(.*?agent.*?)\s*=+$/i);
+                const dattoMatch = line.match(/^=+\s*(.*?datto-av.*?)\s*=+$/i);
+                const updateMatch = line.match(/^=+\s*(.*?update.*?)\s*=+$/i);
+
+                if (agentMatch || dattoMatch || updateMatch) {
+                    // Save previous log if any
+                    if (currentLogFile && currentLogContent.length > 0) {
+                        g_archiveLogFiles[currentLogFile] = currentLogContent.join('\n');
+                    }
+                    // Start new log
+                    currentLogFile = agentMatch ? agentMatch[1] : (dattoMatch ? dattoMatch[1] : updateMatch[1]);
+                    currentLogContent = [];
+                } else if (currentLogFile) {
+                    // Add line to current log
+                    currentLogContent.push(line);
+                }
+            });
+
+            // Save last log
+            if (currentLogFile && currentLogContent.length > 0) {
+                g_archiveLogFiles[currentLogFile] = currentLogContent.join('\n');
+            }
+
+            // Fallback: if no sections detected, look for patterns in the raw content
+            if (Object.keys(g_archiveLogFiles).length === 0) {
+                const agentLogs = logContent.split('\n').filter(line => line.match(/^\[\d{4}-\d{2}-\d{2}.*?\].*?agent/i));
+                const dattoLogs = logContent.split('\n').filter(line => line.match(/^\[\d{4}-\d{2}-\d{2}.*?\].*?(BaseScan|LocalScanner)/i));
+                
+                if (agentLogs.length > 0) {
+                    g_archiveLogFiles['agent.log'] = agentLogs.join('\n');
+                }
+                if (dattoLogs.length > 0) {
+                    g_archiveLogFiles['datto-av.log'] = dattoLogs.join('\n');
+                }
             }
         }
 
@@ -1107,24 +1156,43 @@
             // --- 4. Agent Log Analyzer Panel ---
             const agentPanel = document.getElementById('agent-tab');
             if (agentPanel) {
+                const availableLogs = Object.keys(g_archiveLogFiles);
                 let agentHtml = `
                     <div class="p-6 bg-white rounded-lg shadow-sm border border-gray-200">
-                        <h2 class="text-xl font-bold text-gray-800 mb-4">Agent Log Analysis</h2>
-                        <p class="text-gray-600 mb-4 text-sm">Upload <code>agent.log</code> files to analyze structured logs and format JSON payloads.</p>
+                        <h2 class="text-xl font-bold text-gray-800 mb-4">Agent & System Log Analysis</h2>
+                        <p class="text-gray-600 mb-4 text-sm">Analyzing logs extracted from your archive: <strong>${availableLogs.length > 0 ? availableLogs.join(', ') : 'No logs detected'}</strong></p>
                         
-                        <div class="flex flex-col md:flex-row gap-4 items-end">
-                            <div class="w-full">
-                                <label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Select Log File (.log/.txt)</label>
-                                <input type="file" id="agentInput" accept=".log,.txt" class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 transition"/>
+                        ${availableLogs.length > 0 ? `
+                        <div class="flex flex-col md:flex-row gap-4 items-end mb-4">
+                            <div class="w-full md:w-1/3">
+                                <label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Select Log File</label>
+                                <select id="agentLogSelector" onchange="loadArchiveLog(this.value)" class="w-full px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
+                                    <option value="">Choose a log file...</option>
+                                    ${availableLogs.map(log => `<option value="${log}">${log}</option>`).join('')}
+                                </select>
                             </div>
                             <div class="w-full md:w-1/3">
                                  <label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Filter Messages</label>
                                  <input type="text" id="agentFilter" onkeyup="filterAgentLogs()" placeholder="Search logs..." class="w-full px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
                             </div>
-                            <button onclick="parseAgentLogs()" class="bg-emerald-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-emerald-700 transition shadow-sm h-10">
-                                Analyze Logs
+                            <button onclick="parseArchiveLog()" class="bg-emerald-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-emerald-700 transition shadow-sm h-10">
+                                Analyze Selected
                             </button>
                         </div>
+                        ` : `
+                        <div class="p-4 bg-amber-50 rounded-lg border border-amber-200 mb-4">
+                            <p class="text-amber-700 text-sm">No agent/system logs detected in archive. Please check your log file.</p>
+                        </div>
+                        <div class="flex flex-col md:flex-row gap-4 items-end">
+                            <div class="w-full">
+                                <label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Or upload a log file manually</label>
+                                <input type="file" id="agentInput" accept=".log,.txt" class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 transition"/>
+                            </div>
+                            <button onclick="parseAgentLogs()" class="bg-emerald-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-emerald-700 transition shadow-sm h-10">
+                                Analyze
+                            </button>
+                        </div>
+                        `}
                         <div id="agentStatus" class="mt-2 text-sm text-gray-500 font-medium"></div>
                     </div>
 
@@ -1169,10 +1237,67 @@
         let g_agentLogs = [];
         let g_filteredLogs = [];
         let g_agentPage = 0;
+        let g_currentAgentLogFile = null;
         const AGENT_PAGE_SIZE = 100;
 
         // Regex for the format: [timestamp][guid][host][ver][pid][lvl][route] message
         const AGENT_REGEX = /^\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\s+(.*)$/;
+
+        function loadArchiveLog(logFileName) {
+            g_currentAgentLogFile = logFileName;
+        }
+
+        async function parseArchiveLog() {
+            const fileName = document.getElementById('agentLogSelector').value;
+            const status = document.getElementById('agentStatus');
+            
+            if (!fileName || !g_archiveLogFiles[fileName]) {
+                status.textContent = "Please select a log file first.";
+                status.className = "mt-2 text-sm text-red-600";
+                return;
+            }
+
+            status.textContent = "Parsing...";
+            status.className = "mt-2 text-sm text-blue-600";
+            
+            try {
+                const logText = g_archiveLogFiles[fileName];
+                const lines = logText.split(/\r?\n/);
+                g_agentLogs = [];
+
+                lines.forEach(line => {
+                    if (!line.trim()) return;
+                    const cleanLine = line.replace(/^\s*/, '');
+                    
+                    const match = cleanLine.match(AGENT_REGEX);
+                    if (match) {
+                        g_agentLogs.push({
+                            ts: match[1],
+                            id: match[2],
+                            host: match[3],
+                            ver: match[4],
+                            pid: match[5],
+                            lvl: match[6],
+                            route: match[7],
+                            msg: match[8]
+                        });
+                    }
+                });
+
+                g_filteredLogs = [...g_agentLogs];
+                g_agentPage = 0;
+                renderAgentTable();
+                
+                status.textContent = `Successfully parsed ${g_agentLogs.length.toLocaleString()} log entries from ${fileName}.`;
+                status.className = "mt-2 text-sm text-green-600";
+                document.getElementById('agentResults').classList.remove('hidden');
+
+            } catch (e) {
+                console.error(e);
+                status.textContent = "Error parsing file: " + e.message;
+                status.className = "mt-2 text-sm text-red-600";
+            }
+        }
 
         async function parseAgentLogs() {
             const fileInput = document.getElementById('agentInput');
@@ -1180,6 +1305,7 @@
             
             if (!fileInput.files.length) {
                 status.textContent = "Please select a file first.";
+
                 status.className = "mt-2 text-sm text-red-600";
                 return;
             }
@@ -1333,6 +1459,8 @@
         window.filterAgentLogs = filterAgentLogs;
         window.changeAgentPage = changeAgentPage;
         window.viewAgentPayload = viewAgentPayload;
+        window.loadArchiveLog = loadArchiveLog;
+        window.parseArchiveLog = parseArchiveLog;
 
     </script>
 </body>
