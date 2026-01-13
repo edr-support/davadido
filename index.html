@@ -118,6 +118,19 @@
         </div>
     </div>
 
+    <div id="jsonModal" class="fixed inset-0 bg-gray-900 bg-opacity-50 hidden items-center justify-center z-50 p-4" onclick="if(event.target === this) this.classList.add('hidden')">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col">
+            <div class="flex justify-between items-center p-4 border-b">
+                <h3 class="font-bold text-gray-800">Message Detail</h3>
+                <button onclick="document.getElementById('jsonModal').classList.add('hidden')" class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+            </div>
+            <div class="p-4 overflow-auto bg-slate-50 font-mono text-xs" id="jsonModalContent"></div>
+            <div class="p-3 border-t bg-gray-50 flex justify-end">
+                <button onclick="document.getElementById('jsonModal').classList.add('hidden')" class="px-4 py-2 bg-white border rounded hover:bg-gray-50 text-sm font-medium">Close</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // --- Globals ---
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -857,10 +870,12 @@
                     <button class="tab-btn active" onclick="openTab('scan-stats-panel')">Scan Stats</button>
                     <button class="tab-btn" onclick="openTab('exclusions-panel')">Exclusions (${stats.exclusionData.length})</button>
                     <button class="tab-btn" onclick="openTab('dns-netprot-panel')">DNS/NetProtection</button>
+                    <button class="tab-btn" onclick="openTab('agent-tab')">Agent Log Analyzer</button>
                 </div>
                 <div id="scan-stats-panel" class="tab-panel active space-y-8"></div>
                 <div id="exclusions-panel" class="tab-panel space-y-8"></div>
                 <div id="dns-netprot-panel" class="tab-panel space-y-8"></div>
+                <div id="agent-tab" class="tab-panel space-y-6"></div>
             `;
             ui.results.innerHTML = resultsHtml;
 
@@ -1088,6 +1103,57 @@
             });
 
             dnsNetProtPanel.innerHTML = dnsNetProtHtml;
+
+            // --- 4. Agent Log Analyzer Panel ---
+            const agentPanel = document.getElementById('agent-tab');
+            if (agentPanel) {
+                let agentHtml = `
+                    <div class="p-6 bg-white rounded-lg shadow-sm border border-gray-200">
+                        <h2 class="text-xl font-bold text-gray-800 mb-4">Agent Log Analysis</h2>
+                        <p class="text-gray-600 mb-4 text-sm">Upload <code>agent.log</code> files to analyze structured logs and format JSON payloads.</p>
+                        
+                        <div class="flex flex-col md:flex-row gap-4 items-end">
+                            <div class="w-full">
+                                <label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Select Log File (.log/.txt)</label>
+                                <input type="file" id="agentInput" accept=".log,.txt" class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 transition"/>
+                            </div>
+                            <div class="w-full md:w-1/3">
+                                 <label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Filter Messages</label>
+                                 <input type="text" id="agentFilter" onkeyup="filterAgentLogs()" placeholder="Search logs..." class="w-full px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
+                            </div>
+                            <button onclick="parseAgentLogs()" class="bg-emerald-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-emerald-700 transition shadow-sm h-10">
+                                Analyze Logs
+                            </button>
+                        </div>
+                        <div id="agentStatus" class="mt-2 text-sm text-gray-500 font-medium"></div>
+                    </div>
+
+                    <div id="agentResults" class="hidden">
+                        <div class="overflow-x-auto bg-white rounded-lg shadow border border-gray-200">
+                            <table class="min-w-full text-sm text-left">
+                                <thead class="bg-gray-50 text-gray-500 font-medium border-b">
+                                    <tr>
+                                        <th class="px-4 py-3 w-40">Time (UTC)</th>
+                                        <th class="px-4 py-3 w-24">Level</th>
+                                        <th class="px-4 py-3 w-24">PID</th>
+                                        <th class="px-4 py-3 w-48">Route</th>
+                                        <th class="px-4 py-3">Message</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="agentLogBody" class="divide-y divide-gray-100"></tbody>
+                            </table>
+                        </div>
+                        <div id="agentPagination" class="mt-4 flex justify-between items-center text-sm text-gray-500">
+                            <span id="agentCount"></span>
+                            <div class="space-x-2">
+                                <button onclick="changeAgentPage(-1)" class="px-3 py-1 border rounded hover:bg-gray-50">Previous</button>
+                                <button onclick="changeAgentPage(1)" class="px-3 py-1 border rounded hover:bg-gray-50">Next</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                agentPanel.innerHTML = agentHtml;
+            }
         }
 
         // Initialize the first tab (just in case)
@@ -1097,6 +1163,176 @@
                 firstTabButton.click();
             }
         });
+
+        // --- AGENT LOG ANALYZER LOGIC ---
+
+        let g_agentLogs = [];
+        let g_filteredLogs = [];
+        let g_agentPage = 0;
+        const AGENT_PAGE_SIZE = 100;
+
+        // Regex for the format: [timestamp][guid][host][ver][pid][lvl][route] message
+        const AGENT_REGEX = /^\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\s+(.*)$/;
+
+        async function parseAgentLogs() {
+            const fileInput = document.getElementById('agentInput');
+            const status = document.getElementById('agentStatus');
+            
+            if (!fileInput.files.length) {
+                status.textContent = "Please select a file first.";
+                status.className = "mt-2 text-sm text-red-600";
+                return;
+            }
+
+            status.textContent = "Parsing...";
+            status.className = "mt-2 text-sm text-blue-600";
+            
+            try {
+                // Read file
+                const text = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = e => resolve(e.target.result);
+                    reader.onerror = reject;
+                    reader.readAsText(fileInput.files[0]);
+                });
+
+                const lines = text.split(/\r?\n/);
+                g_agentLogs = [];
+
+                lines.forEach(line => {
+                    if (!line.trim()) return;
+                    // Clean up any "" prefix if present from copy-paste
+                    const cleanLine = line.replace(/^\s*/, '');
+                    
+                    const match = cleanLine.match(AGENT_REGEX);
+                    if (match) {
+                        g_agentLogs.push({
+                            ts: match[1],
+                            id: match[2],
+                            host: match[3],
+                            ver: match[4],
+                            pid: match[5],
+                            lvl: match[6],
+                            route: match[7],
+                            msg: match[8]
+                        });
+                    }
+                });
+
+                g_filteredLogs = [...g_agentLogs];
+                g_agentPage = 0;
+                renderAgentTable();
+                
+                status.textContent = `Successfully parsed ${g_agentLogs.length.toLocaleString()} log entries.`;
+                status.className = "mt-2 text-sm text-green-600";
+                document.getElementById('agentResults').classList.remove('hidden');
+
+            } catch (e) {
+                console.error(e);
+                status.textContent = "Error parsing file: " + e.message;
+                status.className = "mt-2 text-sm text-red-600";
+            }
+        }
+
+        function filterAgentLogs() {
+            const term = document.getElementById('agentFilter').value.toLowerCase();
+            g_filteredLogs = g_agentLogs.filter(log => 
+                log.msg.toLowerCase().includes(term) || 
+                log.route.toLowerCase().includes(term) ||
+                log.lvl.toLowerCase().includes(term)
+            );
+            g_agentPage = 0;
+            renderAgentTable();
+        }
+
+        function changeAgentPage(delta) {
+            const maxPage = Math.ceil(g_filteredLogs.length / AGENT_PAGE_SIZE) - 1;
+            g_agentPage += delta;
+            if (g_agentPage < 0) g_agentPage = 0;
+            if (g_agentPage > maxPage) g_agentPage = maxPage;
+            renderAgentTable();
+        }
+
+        function renderAgentTable() {
+            const tbody = document.getElementById('agentLogBody');
+            if (!tbody) return; // Exit if table body doesn't exist yet
+            const start = g_agentPage * AGENT_PAGE_SIZE;
+            const end = start + AGENT_PAGE_SIZE;
+            const pageData = g_filteredLogs.slice(start, end);
+            
+            document.getElementById('agentCount').textContent = 
+                `Showing ${start + 1}-${Math.min(end, g_filteredLogs.length)} of ${g_filteredLogs.length}`;
+
+            let html = '';
+            pageData.forEach((log, idx) => {
+                // Color coding for levels
+                let lvlClass = "bg-gray-100 text-gray-600";
+                if (log.lvl === 'ERR') lvlClass = "bg-red-100 text-red-800";
+                else if (log.lvl === 'WRN') lvlClass = "bg-yellow-100 text-yellow-800";
+                else if (log.lvl === 'INF') lvlClass = "bg-blue-50 text-blue-700";
+
+                // JSON Detection
+                let msgHtml = escapeHtml(log.msg);
+                let actionBtn = "";
+                
+                // Heuristic: If message contains "{" or looks like struct
+                if (log.msg.includes('{') || log.msg.includes('Job Payload:')) {
+                     // Create a "View Payload" button
+                     const logIndex = start + idx;
+                     actionBtn = `<button onclick="viewAgentPayload(${logIndex})" class="ml-2 text-xs bg-indigo-50 text-indigo-600 px-2 py-1 rounded border border-indigo-100 hover:bg-indigo-100">View Data</button>`;
+                }
+
+                html += `
+                    <tr class="hover:bg-slate-50 border-b border-gray-100 font-mono text-xs">
+                        <td class="px-4 py-2 whitespace-nowrap text-gray-500">${escapeHtml(log.ts)}</td>
+                        <td class="px-4 py-2"><span class="${lvlClass} px-2 py-0.5 rounded text-[10px] font-bold">${escapeHtml(log.lvl)}</span></td>
+                        <td class="px-4 py-2 text-gray-500">${escapeHtml(log.pid)}</td>
+                        <td class="px-4 py-2 text-gray-600 truncate max-w-[150px]" title="${escapeHtml(log.route)}">${escapeHtml(log.route.replace('agent::', ''))}</td>
+                        <td class="px-4 py-2 text-gray-800 break-all">${msgHtml.substring(0, 120)}${log.msg.length > 120 ? '...' : ''} ${actionBtn}</td>
+                    </tr>
+                `;
+            });
+            tbody.innerHTML = html;
+        }
+
+        function viewAgentPayload(index) {
+            const log = g_filteredLogs[index];
+            if(!log) return;
+
+            let content = log.msg;
+            let title = "Log Detail";
+
+            // Try to format if it looks like JSON or Rust Struct
+            // 1. Valid JSON extraction
+            const jsonStart = content.indexOf('{');
+            const jsonEnd = content.lastIndexOf('}');
+            
+            if (jsonStart >= 0 && jsonEnd > jsonStart) {
+                const potentialJson = content.substring(jsonStart, jsonEnd + 1);
+                try {
+                    const obj = JSON.parse(potentialJson);
+                    content = syntaxHighlight(obj);
+                } catch (e) {
+                    // If strict parse fails, it might be Rust Debug output (e.g. `Some(Object { ... })`)
+                    // Simple formatter: add newlines after braces
+                    content = escapeHtml(content)
+                        .replace(/\{/g, '{\n  ')
+                        .replace(/\}/g, '\n}')
+                        .replace(/,/g, ',\n  ');
+                    content = `<pre>${content}</pre>`;
+                }
+            } else {
+                content = `<pre>${escapeHtml(content)}</pre>`;
+            }
+
+            document.getElementById('jsonModalContent').innerHTML = content;
+            document.getElementById('jsonModal').classList.remove('hidden');
+        }
+
+        window.parseAgentLogs = parseAgentLogs;
+        window.filterAgentLogs = filterAgentLogs;
+        window.changeAgentPage = changeAgentPage;
+        window.viewAgentPayload = viewAgentPayload;
 
     </script>
 </body>
