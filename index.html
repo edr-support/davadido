@@ -1681,8 +1681,13 @@
                 return renderObjectValueSmart(value);
             }
             
-            // Handle complex nested structures with proper formatting
-            if (value.includes('{') || value.includes('[')) {
+            // Handle raw nested [ or { (detected in blob content)
+            if ((value.startsWith('[') && value.endsWith(']')) || (value.startsWith('{') && value.endsWith('}'))) {
+                return renderNestedStructure(value, 0);
+            }
+            
+            // Large values with nested content
+            if ((value.includes('[') || value.includes('{')) && value.length > 300) {
                 return renderComplexStructureSmart(value);
             }
             
@@ -1693,6 +1698,179 @@
             
             // Default
             return `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
+        }
+
+        function renderNestedStructure(value, depth = 0) {
+            // For [Object ...], Array [...], or raw nested structures
+            if (value.startsWith('[')) {
+                // Array-like
+                const inner = value.slice(1, -1).trim();
+                const items = parseTopLevelItems(inner);
+                return renderNestedArrayDisplay(items, depth);
+            } else if (value.startsWith('{')) {
+                // Object-like
+                const inner = value.slice(1, -1).trim();
+                const fields = parseTopLevelItems(inner);
+                return renderNestedObjectDisplay(fields, depth);
+            }
+            return `<span style="color: #cbd5e1;">${escapeHtml(value.substring(0, 100))}</span>`;
+        }
+
+        function parseTopLevelItems(content) {
+            const items = [];
+            let current = '';
+            let depth = 0;
+            let inString = false;
+            let escapeNext = false;
+            
+            for (let i = 0; i < content.length; i++) {
+                const char = content[i];
+                const prevChar = i > 0 ? content[i - 1] : '';
+                
+                if (escapeNext) {
+                    current += char;
+                    escapeNext = false;
+                    continue;
+                }
+                
+                if (char === '\\' && inString) {
+                    escapeNext = true;
+                    current += char;
+                    continue;
+                }
+                
+                if (char === '"' && prevChar !== '\\') {
+                    inString = !inString;
+                }
+                
+                if (!inString) {
+                    if (char === '{' || char === '[' || char === '(') depth++;
+                    if (char === '}' || char === ']' || char === ')') depth--;
+                }
+                
+                if (char === ',' && depth === 0 && !inString) {
+                    if (current.trim()) items.push(current.trim());
+                    current = '';
+                } else {
+                    current += char;
+                }
+            }
+            
+            if (current.trim()) items.push(current.trim());
+            return items;
+        }
+
+        function renderNestedArrayDisplay(items, depth) {
+            const count = items.length;
+            const uniqueId = 'narr_' + Math.random().toString(36).substr(2, 9);
+            
+            let html = `<div style="color: #cbd5e1; margin-top: 4px;">`;
+            html += `<div style="display: flex; align-items: center; gap: 8px; padding: 8px; background: rgba(51, 65, 85, 0.5); border-radius: 3px; margin-bottom: 8px; cursor: pointer;" onclick="const c = document.getElementById('${uniqueId}_c'); c.style.display = c.style.display === 'none' ? 'block' : 'none'; this.querySelector('[data-t]').textContent = this.querySelector('[data-t]').textContent === '▼' ? '▶' : '▼';">
+                <span data-t style="color: #a78bfa; font-weight: 600;">▼</span>
+                <span style="color: #60a5fa; font-weight: 600;">Array</span>
+                <span style="color: #a78bfa;">[${count}]</span>
+            </div>`;
+            
+            html += `<div id="${uniqueId}_c" style="padding-left: 16px; border-left: 2px solid #334155;">`;
+            
+            const showCount = Math.min(5, count);
+            for (let i = 0; i < showCount; i++) {
+                const item = items[i].trim();
+                html += `<div style="margin: 6px 0; padding: 8px; background: rgba(15, 23, 42, 0.5); border-radius: 3px; border-left: 2px solid #475569;">[${i}] ${renderNestedItem(item, depth + 1)}</div>`;
+            }
+            
+            if (count > 5) {
+                html += `<div style="margin: 10px 0; padding: 8px; background: rgba(59, 130, 246, 0.1); border-radius: 3px; border-left: 3px solid #3b82f6; color: #60a5fa; font-style: italic;">... and ${count - 5} more items</div>`;
+            }
+            
+            html += `</div></div>`;
+            return html;
+        }
+
+        function renderNestedObjectDisplay(fields, depth) {
+            const count = fields.length;
+            const uniqueId = 'nobj_' + Math.random().toString(36).substr(2, 9);
+            
+            let html = `<div style="color: #cbd5e1; margin-top: 4px;">`;
+            html += `<div style="display: flex; align-items: center; gap: 8px; padding: 8px; background: rgba(51, 65, 85, 0.5); border-radius: 3px; margin-bottom: 8px; cursor: pointer;" onclick="const c = document.getElementById('${uniqueId}_c'); c.style.display = c.style.display === 'none' ? 'block' : 'none'; this.querySelector('[data-t]').textContent = this.querySelector('[data-t]').textContent === '▼' ? '▶' : '▼';">
+                <span data-t style="color: #a78bfa; font-weight: 600;">▼</span>
+                <span style="color: #60a5fa; font-weight: 600;">Object</span>
+                <span style="color: #a78bfa;">{${count}}</span>
+            </div>`;
+            
+            html += `<div id="${uniqueId}_c" style="padding-left: 16px; border-left: 2px solid #334155;">`;
+            
+            const showCount = Math.min(6, count);
+            for (let i = 0; i < showCount; i++) {
+                const colonIdx = fields[i].indexOf(':');
+                if (colonIdx > -1) {
+                    const k = fields[i].substring(0, colonIdx).trim();
+                    const v = fields[i].substring(colonIdx + 1).trim();
+                    const bgColor = i % 2 === 0 ? 'rgba(15, 23, 42, 0.4)' : 'rgba(30, 41, 59, 0.4)';
+                    html += `<div style="margin: 6px 0; padding: 8px; background: ${bgColor}; border-radius: 3px; border-left: 2px solid #475569;">
+                        <div style="display: flex; gap: 8px; align-items: flex-start;">
+                            <span style="color: #d8b4fe; font-weight: 500; min-width: 160px; flex-shrink: 0; word-break: break-word;">${escapeHtml(k)}</span>
+                            <span style="color: #cbd5e1;">:</span>
+                            <div style="flex: 1; word-break: break-word;">${renderNestedItem(v, depth + 1)}</div>
+                        </div>
+                    </div>`;
+                } else {
+                    // Just a value without colon
+                    html += `<div style="margin: 6px 0; padding: 8px; background: rgba(15, 23, 42, 0.4); border-radius: 3px; border-left: 2px solid #475569; color: #cbd5e1;">${renderNestedItem(fields[i].trim(), depth + 1)}</div>`;
+                }
+            }
+            
+            if (count > 6) {
+                html += `<div style="margin: 10px 0; padding: 8px; background: rgba(59, 130, 246, 0.1); border-radius: 3px; border-left: 3px solid #3b82f6; color: #60a5fa; font-style: italic;">... and ${count - 6} more fields</div>`;
+            }
+            
+            html += `</div></div>`;
+            return html;
+        }
+
+        function renderNestedItem(value, depth) {
+            value = value.trim();
+            
+            // Detect types
+            if (value === 'None' || value === 'Null') {
+                return `<span style="color: #fcd34d; font-weight: 600;">null</span>`;
+            }
+            if (value === 'true' || value === 'false') {
+                return `<span style="color: #60a5fa; font-weight: 600;">${value}</span>`;
+            }
+            if (/^-?\d+(\.\d+)?$/.test(value)) {
+                return `<span style="color: #34d399; font-weight: 600;">${value}</span>`;
+            }
+            if (value.startsWith('"') && value.endsWith('"')) {
+                const str = value.slice(1, -1);
+                const shortStr = str.length > 60 ? str.substring(0, 57) + '...' : str;
+                return `<span style="color: #86efac;">"${escapeHtml(shortStr)}"</span>`;
+            }
+            
+            // Nested arrays/objects
+            if ((value.startsWith('[') && value.endsWith(']')) || (value.startsWith('{') && value.endsWith('}'))) {
+                if (depth < 3) {
+                    return renderNestedStructure(value, depth);
+                } else {
+                    return `<span style="color: #cbd5e1; font-style: italic;">...</span>`;
+                }
+            }
+            
+            // Check for Object or Array keyword at start
+            if (value.startsWith('Object {')) {
+                const inner = value.substring(7, value.length - 1);
+                const fields = parseTopLevelItems(inner);
+                return renderNestedObjectDisplay(fields, depth);
+            }
+            if (value.startsWith('Array [')) {
+                const inner = value.substring(6, value.length - 1);
+                const items = parseTopLevelItems(inner);
+                return renderNestedArrayDisplay(items, depth);
+            }
+            
+            // String value
+            const shortVal = value.length > 60 ? value.substring(0, 57) + '...' : value;
+            return `<span style="color: #cbd5e1;">${escapeHtml(shortVal)}</span>`;
         }
 
         function renderArrayValueSmart(value) {
