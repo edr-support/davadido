@@ -1211,11 +1211,20 @@
                                 <tbody id="agentLogBody" class="divide-y divide-gray-100"></tbody>
                             </table>
                         </div>
-                        <div id="agentPagination" class="mt-4 flex justify-between items-center text-sm text-gray-500">
-                            <span id="agentCount"></span>
-                            <div class="space-x-2">
-                                <button onclick="changeAgentPage(-1)" class="px-3 py-1 border rounded hover:bg-gray-50">Previous</button>
-                                <button onclick="changeAgentPage(1)" class="px-3 py-1 border rounded hover:bg-gray-50">Next</button>
+                        <div id="agentPagination" class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between text-sm text-gray-600">
+                            <div class="flex items-center gap-2">
+                                <span class="font-medium">Rows per page:</span>
+                                <button class="agent-page-size-btn pg-btn active" onclick="changeAgentPageSize(10)">10</button>
+                                <button class="agent-page-size-btn pg-btn" onclick="changeAgentPageSize(25)">25</button>
+                                <button class="agent-page-size-btn pg-btn" onclick="changeAgentPageSize(50)">50</button>
+                                <button class="agent-page-size-btn pg-btn" onclick="changeAgentPageSize(100)">100</button>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <span id="agentCount" class="text-xs font-medium"></span>
+                                <div class="space-x-2 ml-4">
+                                    <button id="agentPrevBtn" onclick="changeAgentPage(-1)" class="pg-btn" disabled>Prev</button>
+                                    <button id="agentNextBtn" onclick="changeAgentPage(1)" class="pg-btn">Next</button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1237,8 +1246,8 @@
         let g_agentLogs = [];
         let g_filteredLogs = [];
         let g_agentPage = 0;
+        let g_agentPageSize = 25;
         let g_currentAgentLogFile = null;
-        const AGENT_PAGE_SIZE = 100;
 
         // Regex for the format: [timestamp][guid][host][ver][pid][lvl][route] message
         const AGENT_REGEX = /^\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\s+(.*)$/;
@@ -1372,19 +1381,35 @@
         }
 
         function changeAgentPage(delta) {
-            const maxPage = Math.ceil(g_filteredLogs.length / AGENT_PAGE_SIZE) - 1;
+            const maxPage = Math.ceil(g_filteredLogs.length / g_agentPageSize) - 1;
             g_agentPage += delta;
             if (g_agentPage < 0) g_agentPage = 0;
             if (g_agentPage > maxPage) g_agentPage = maxPage;
             renderAgentTable();
         }
 
+        function changeAgentPageSize(size) {
+            g_agentPageSize = size;
+            g_agentPage = 0;
+            renderAgentTable();
+            // Update button styles
+            document.querySelectorAll('.agent-page-size-btn').forEach(btn => {
+                btn.classList.toggle('active', parseInt(btn.textContent) === size);
+            });
+        }
+
         function renderAgentTable() {
             const tbody = document.getElementById('agentLogBody');
             if (!tbody) return; // Exit if table body doesn't exist yet
-            const start = g_agentPage * AGENT_PAGE_SIZE;
-            const end = start + AGENT_PAGE_SIZE;
+            const start = g_agentPage * g_agentPageSize;
+            const end = start + g_agentPageSize;
             const pageData = g_filteredLogs.slice(start, end);
+            const totalPages = Math.ceil(g_filteredLogs.length / g_agentPageSize);
+            
+            const prevBtn = document.getElementById('agentPrevBtn');
+            const nextBtn = document.getElementById('agentNextBtn');
+            if (prevBtn) prevBtn.disabled = g_agentPage === 0;
+            if (nextBtn) nextBtn.disabled = g_agentPage >= totalPages - 1;
             
             document.getElementById('agentCount').textContent = 
                 `Showing ${start + 1}-${Math.min(end, g_filteredLogs.length)} of ${g_filteredLogs.length}`;
@@ -1426,38 +1451,86 @@
             if(!log) return;
 
             let content = log.msg;
-            let title = "Log Detail";
-
-            // Try to format if it looks like JSON or Rust Struct
-            // 1. Valid JSON extraction
             const jsonStart = content.indexOf('{');
             const jsonEnd = content.lastIndexOf('}');
+            
+            let html = `<div class="space-y-3">`;
+            
+            // Add metadata at the top
+            html += `
+                <div class="bg-slate-100 p-3 rounded text-xs space-y-1 border-l-4 border-emerald-500">
+                    <div><strong>Timestamp:</strong> ${escapeHtml(log.ts)}</div>
+                    <div><strong>Route:</strong> ${escapeHtml(log.route)}</div>
+                    <div><strong>Level:</strong> <span class="font-mono font-bold">${escapeHtml(log.lvl)}</span></div>
+                    <div><strong>PID:</strong> ${escapeHtml(log.pid)}</div>
+                </div>
+            `;
             
             if (jsonStart >= 0 && jsonEnd > jsonStart) {
                 const potentialJson = content.substring(jsonStart, jsonEnd + 1);
                 try {
                     const obj = JSON.parse(potentialJson);
-                    content = syntaxHighlight(obj);
+                    // Beautiful JSON rendering
+                    html += `<div class="bg-slate-900 p-4 rounded text-sm font-mono text-slate-100 overflow-auto max-h-96 border border-slate-700"><div class="inline-block">${renderJsonTree(obj, 0)}</div></div>`;
                 } catch (e) {
-                    // If strict parse fails, it might be Rust Debug output (e.g. `Some(Object { ... })`)
-                    // Simple formatter: add newlines after braces
-                    content = escapeHtml(content)
-                        .replace(/\{/g, '{\n  ')
-                        .replace(/\}/g, '\n}')
-                        .replace(/,/g, ',\n  ');
-                    content = `<pre>${content}</pre>`;
+                    // Fallback for non-JSON
+                    html += `<div class="bg-slate-900 p-4 rounded text-sm font-mono text-slate-100 overflow-auto max-h-96 whitespace-pre-wrap border border-slate-700">${escapeHtml(content)}</div>`;
                 }
             } else {
-                content = `<pre>${escapeHtml(content)}</pre>`;
+                html += `<div class="bg-slate-900 p-4 rounded text-sm font-mono text-slate-100 overflow-auto max-h-96 whitespace-pre-wrap border border-slate-700">${escapeHtml(content)}</div>`;
             }
-
-            document.getElementById('jsonModalContent').innerHTML = content;
+            
+            html += `</div>`;
+            
+            document.getElementById('jsonModalContent').innerHTML = html;
             document.getElementById('jsonModal').classList.remove('hidden');
+        }
+
+        function renderJsonTree(obj, depth = 0) {
+            const indent = '&nbsp;&nbsp;'.repeat(depth);
+            const nextIndent = '&nbsp;&nbsp;'.repeat(depth + 1);
+            
+            if (obj === null) {
+                return `<span style="color: #fcd34d;">null</span>`;
+            }
+            if (typeof obj === 'boolean') {
+                return `<span style="color: #93c5fd;">${obj}</span>`;
+            }
+            if (typeof obj === 'number') {
+                return `<span style="color: #06b6d4;">${obj}</span>`;
+            }
+            if (typeof obj === 'string') {
+                return `<span style="color: #86efac;">"${escapeHtml(obj)}"</span>`;
+            }
+            if (Array.isArray(obj)) {
+                if (obj.length === 0) return `<span style="color: #cbd5e1;">[&nbsp;]</span>`;
+                let html = `<span style="color: #cbd5e1;">[</span><br/>${nextIndent}`;
+                html += obj.map((item, i) => {
+                    const comma = i < obj.length - 1 ? ',<br/>' + nextIndent : '';
+                    return `${renderJsonTree(item, depth + 1)}${comma}`;
+                }).join('');
+                html += `<br/>${indent}<span style="color: #cbd5e1;">]</span>`;
+                return html;
+            }
+            if (typeof obj === 'object') {
+                const keys = Object.keys(obj);
+                if (keys.length === 0) return `<span style="color: #cbd5e1;">{&nbsp;}</span>`;
+                let html = `<span style="color: #cbd5e1;">{</span><br/>${nextIndent}`;
+                html += keys.map((key, i) => {
+                    const comma = i < keys.length - 1 ? ',<br/>' + nextIndent : '';
+                    return `<span style="color: #c084fc;">"${escapeHtml(key)}"</span><span style="color: #cbd5e1;">:&nbsp;</span>${renderJsonTree(obj[key], depth + 1)}${comma}`;
+                }).join('');
+                html += `<br/>${indent}<span style="color: #cbd5e1;">}</span>`;
+                return html;
+            }
+            return escapeHtml(String(obj));
+        }
         }
 
         window.parseAgentLogs = parseAgentLogs;
         window.filterAgentLogs = filterAgentLogs;
         window.changeAgentPage = changeAgentPage;
+        window.changeAgentPageSize = changeAgentPageSize;
         window.viewAgentPayload = viewAgentPayload;
         window.loadArchiveLog = loadArchiveLog;
         window.parseArchiveLog = parseArchiveLog;
