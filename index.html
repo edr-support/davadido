@@ -1482,12 +1482,10 @@
             
             // If we have a parsed object, use pretty display
             if (parsedObj) {
-                html += `<div class="bg-slate-950 p-4 rounded-lg border border-slate-700 shadow-lg">${renderPrettyJson(parsedObj)}</div>`;
+                html += `<div class="bg-slate-950 p-4 rounded-lg border border-slate-700 shadow-lg overflow-auto max-h-96" style="font-size: 11px;">${renderPrettyJson(parsedObj)}</div>`;
             } else {
-                // Try to parse as Rust struct format
-                const rustMatch = content.match(/Job Payload: (.+)/s) || [null, content];
-                const rustContent = rustMatch[1] || content;
-                html += `<div class="bg-slate-950 p-4 rounded-lg border border-slate-700 shadow-lg text-sm font-mono text-slate-100">${renderRustStruct(rustContent)}</div>`;
+                // Parse as structured Rust data
+                html += `<div class="bg-slate-950 p-4 rounded-lg border border-slate-700 shadow-lg overflow-auto max-h-96" style="font-size: 12px;">${renderRustData(content)}</div>`;
             }
             
             html += `</div>`;
@@ -1497,7 +1495,7 @@
         }
 
         function renderPrettyJson(obj, depth = 0) {
-            const indent = depth * 16;
+            const indent = depth * 20;
             
             if (obj === null) {
                 return `<span style="color: #fcd34d; font-weight: 600;">null</span>`;
@@ -1514,19 +1512,19 @@
             }
             if (Array.isArray(obj)) {
                 if (obj.length === 0) return `<span style="color: #cbd5e1;">[ ]</span>`;
-                return `<div style="margin-left: ${indent}px;"><span style="color: #cbd5e1; font-weight: 600;">[</span><div style="margin-left: 16px; border-left: 2px solid #334155; padding-left: 12px;">
-                    ${obj.map((item, i) => `<div style="margin: 6px 0;">${renderPrettyJson(item, depth + 1)}${i < obj.length - 1 ? '<span style="color: #cbd5e1;">,</span>' : ''}</div>`).join('')}
+                return `<div style="margin-left: ${indent}px;"><span style="color: #cbd5e1; font-weight: 600;">[</span><div style="margin-left: 20px; border-left: 2px solid #334155; padding-left: 12px;">
+                    ${obj.map((item, i) => `<div style="margin: 4px 0;">${renderPrettyJson(item, depth + 1)}${i < obj.length - 1 ? '<span style="color: #cbd5e1;">,</span>' : ''}</div>`).join('')}
                 </div><span style="color: #cbd5e1; font-weight: 600;">]</span></div>`;
             }
             if (typeof obj === 'object') {
                 const keys = Object.keys(obj);
                 if (keys.length === 0) return `<span style="color: #cbd5e1;">{ }</span>`;
                 
-                return `<div style="margin-left: ${indent}px;"><span style="color: #cbd5e1; font-weight: 600;">{</span><div style="margin-left: 16px; border-left: 2px solid #334155; padding-left: 12px;">
+                return `<div style="margin-left: ${indent}px;"><span style="color: #cbd5e1; font-weight: 600;">{</span><div style="margin-left: 20px; border-left: 2px solid #334155; padding-left: 12px;">
                     ${keys.map((key, i) => `
-                        <div style="margin: 8px 0; display: flex;">
-                            <span style="color: #d8b4fe; font-weight: 500; min-width: 200px; word-break: break-word;">"${escapeHtml(key)}"</span>
-                            <span style="color: #cbd5e1; margin: 0 8px;">:</span>
+                        <div style="margin: 6px 0; display: flex; align-items: flex-start;">
+                            <span style="color: #d8b4fe; font-weight: 500; min-width: 220px; flex-shrink: 0;">"${escapeHtml(key)}"</span>
+                            <span style="color: #cbd5e1; margin: 0 8px; flex-shrink: 0;">:</span>
                             <div style="flex: 1;">${renderPrettyJson(obj[key], depth + 1)}</div>
                             ${i < keys.length - 1 ? '<span style="color: #cbd5e1; margin-left: 8px;">,</span>' : ''}
                         </div>
@@ -1536,69 +1534,132 @@
             return `<span style="color: #cbd5e1;">${escapeHtml(String(obj))}</span>`;
         }
 
-        function renderRustStruct(content) {
-            // Split by commas that are at the top level (not inside brackets/parens)
-            const lines = [];
+        function renderRustData(content) {
+            // Extract main structure first
+            const mainMatch = content.match(/^([^{]+)\s*\{(.*)\}$/s);
+            if (!mainMatch) {
+                return `<pre style="color: #cbd5e1; white-space: pre-wrap; word-break: break-word; margin: 0; font-family: monospace;">${escapeHtml(content)}</pre>`;
+            }
+            
+            const title = mainMatch[1].trim();
+            const innerContent = mainMatch[2];
+            
+            let html = `<div style="color: #cbd5e1; font-family: 'Monaco', 'Courier New', monospace;">`;
+            html += `<div style="margin-bottom: 12px; padding: 8px; background: rgba(51, 65, 85, 0.5); border-radius: 4px;">`;
+            html += `<span style="color: #f472b6; font-weight: 700;">${escapeHtml(title)}</span> <span style="color: #cbd5e1;">{</span>`;
+            html += `</div>`;
+            
+            // Parse key-value pairs more intelligently
+            const fields = parseRustFields(innerContent);
+            
+            html += `<div style="padding-left: 16px; border-left: 2px solid #334155;">`;
+            fields.forEach((field, idx) => {
+                html += renderRustField(field, idx === fields.length - 1);
+            });
+            html += `</div>`;
+            html += `<span style="color: #cbd5e1;">}</span></div>`;
+            
+            return html;
+        }
+
+        function parseRustFields(content) {
+            const fields = [];
             let current = '';
             let depth = 0;
+            let inString = false;
+            let escapeNext = false;
             
             for (let i = 0; i < content.length; i++) {
                 const char = content[i];
+                const prevChar = i > 0 ? content[i - 1] : '';
+                const nextChar = i < content.length - 1 ? content[i + 1] : '';
                 
-                if (char === '{' || char === '[' || char === '(') depth++;
-                if (char === '}' || char === ']' || char === ')') depth--;
+                if (escapeNext) {
+                    current += char;
+                    escapeNext = false;
+                    continue;
+                }
                 
-                if (char === ',' && depth === 0) {
-                    lines.push(current.trim());
+                if (char === '\\' && inString) {
+                    escapeNext = true;
+                    current += char;
+                    continue;
+                }
+                
+                if (char === '"' && prevChar !== '\\') {
+                    inString = !inString;
+                }
+                
+                if (!inString) {
+                    if (char === '{' || char === '[' || char === '(') depth++;
+                    if (char === '}' || char === ']' || char === ')') depth--;
+                }
+                
+                if (char === ',' && depth === 0 && !inString) {
+                    const trimmed = current.trim();
+                    if (trimmed) fields.push(trimmed);
                     current = '';
                 } else {
                     current += char;
                 }
             }
-            if (current.trim()) lines.push(current.trim());
             
-            return `<div style="line-height: 1.6;">
-                ${lines.map((line, idx) => renderRustLine(line, idx, lines.length)).join('')}
-            </div>`;
+            if (current.trim()) fields.push(current.trim());
+            return fields;
         }
 
-        function renderRustLine(line, idx, total) {
-            const colonIdx = line.indexOf(':');
+        function renderRustField(fieldStr, isLast) {
+            const colonIdx = fieldStr.indexOf(':');
             if (colonIdx === -1) {
-                return `<div style="margin: 4px 0; color: #cbd5e1;">${escapeHtml(line)}</div>`;
+                return `<div style="margin: 4px 0; color: #cbd5e1;">${escapeHtml(fieldStr)}</div>`;
             }
             
-            const key = line.substring(0, colonIdx).trim();
-            const value = line.substring(colonIdx + 1).trim();
-            const comma = idx < total - 1 ? '<span style="color: #cbd5e1;">,</span>' : '';
+            const key = fieldStr.substring(0, colonIdx).trim();
+            const value = fieldStr.substring(colonIdx + 1).trim();
             
-            // Detect type and color code
-            let valueHtml = '';
-            if (value.startsWith('String(')) {
-                const stringVal = value.match(/String\("(.*)"\)/)?.[1] || value;
-                const shortStr = stringVal.length > 80 ? stringVal.substring(0, 77) + '...' : stringVal;
-                valueHtml = `<span style="color: #86efac;">"${escapeHtml(shortStr)}"</span>`;
-            } else if (value.startsWith('Bool(')) {
-                const boolVal = value.match(/Bool\((true|false)\)/)?.[1] || value;
-                valueHtml = `<span style="color: #60a5fa; font-weight: 600;">${boolVal}</span>`;
-            } else if (value.startsWith('Number(')) {
-                const numVal = value.match(/Number\((.+)\)/)?.[1] || value;
-                valueHtml = `<span style="color: #34d399; font-weight: 600;">${numVal}</span>`;
-            } else if (value.startsWith('Null') || value === 'None') {
-                valueHtml = `<span style="color: #fcd34d; font-weight: 600;">null</span>`;
-            } else if (value.startsWith('Array') || value.startsWith('Some(')) {
-                valueHtml = `<span style="color: #cbd5e1; font-style: italic;">${escapeHtml(value.substring(0, 50))}...</span>`;
-            } else if (value.startsWith('Object')) {
-                valueHtml = `<span style="color: #cbd5e1; font-style: italic;">${escapeHtml(value.substring(0, 50))}...</span>`;
-            } else {
-                valueHtml = `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
+            let html = `<div style="margin: 8px 0; padding: 8px; background: rgba(15, 23, 42, 0.5); border-radius: 4px; border-left: 3px solid #334155;">`;
+            html += `<div style="display: flex; align-items: flex-start; gap: 12px;">`;
+            html += `<span style="color: #d8b4fe; font-weight: 600; flex-shrink: 0; min-width: 200px; word-break: break-word;">${escapeHtml(key)}</span>`;
+            html += `<span style="color: #cbd5e1; flex-shrink: 0;">:</span>`;
+            html += `<div style="flex: 1;">${renderRustValue(value)}</div>`;
+            html += `</div>`;
+            if (!isLast) html += `<span style="color: #cbd5e1; margin-left: auto;">,</span>`;
+            html += `</div>`;
+            
+            return html;
+        }
+
+        function renderRustValue(value) {
+            // Detect type
+            if (value === 'None' || value === 'Null') {
+                return `<span style="color: #fcd34d; font-weight: 600;">null</span>`;
+            }
+            if (value === 'true' || value === 'false') {
+                return `<span style="color: #60a5fa; font-weight: 600;">${value}</span>`;
+            }
+            if (/^-?\d+(\.\d+)?$/.test(value)) {
+                return `<span style="color: #34d399; font-weight: 600;">${value}</span>`;
+            }
+            if (value.startsWith('"') && value.endsWith('"')) {
+                const str = value.slice(1, -1);
+                const shortStr = str.length > 120 ? str.substring(0, 117) + '...' : str;
+                return `<span style="color: #86efac;">"${escapeHtml(shortStr)}"</span>`;
+            }
+            if (value.startsWith('Some(') || value.startsWith('Ok(')) {
+                const inner = value.slice(5, -1);
+                return `<span style="color: #a78bfa; font-style: italic;">Some(${escapeHtml(inner.substring(0, 80))}${inner.length > 80 ? '...)' : ')'}</span>`;
+            }
+            if (value.startsWith('Array [') || value.startsWith('[')) {
+                const count = (value.match(/,/g) || []).length + 1;
+                return `<span style="color: #cbd5e1; background: rgba(51, 65, 85, 0.3); padding: 2px 6px; border-radius: 3px;">Array(${count} items)</span>`;
+            }
+            if (value.startsWith('Object {') || (value.startsWith('{') && !value.startsWith('{'))) {
+                const count = (value.match(/:/g) || []).length;
+                return `<span style="color: #cbd5e1; background: rgba(51, 65, 85, 0.3); padding: 2px 6px; border-radius: 3px;">Object(${count} fields)</span>`;
             }
             
-            return `<div style="margin: 6px 0; padding: 4px 8px; background: rgba(15, 23, 42, 0.3); border-radius: 4px; display: flex; align-items: flex-start;">
-                <span style="color: #d8b4fe; font-weight: 600; min-width: 180px; word-break: break-word;">${escapeHtml(key)}</span>
-                <span style="color: #cbd5e1; margin: 0 12px; flex-shrink: 0;">:</span>
-                <span style="flex: 1; word-break: break-word;">${valueHtml}${comma}</span>
-            </div>`;
+            const shortVal = value.length > 100 ? value.substring(0, 97) + '...' : value;
+            return `<span style="color: #cbd5e1;">${escapeHtml(shortVal)}</span>`;
         }
 
         window.parseAgentLogs = parseAgentLogs;
