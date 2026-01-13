@@ -1537,33 +1537,43 @@
             return `<span style="color: #cbd5e1;">${escapeHtml(String(obj))}</span>`;
         }
 
-        function renderRustData(content) {
-            // Extract main structure first
-            const mainMatch = content.match(/^([^{]+)\s*\{(.*)\}$/s);
-            if (!mainMatch) {
-                // Try to parse as a Rust struct even without clear boundaries
-                return renderSmartRustStruct(content);
+        /**
+         * REPLACEMENT FOR renderRustData
+         * Specifically tuned for the Datto Agent log format (test.txt)
+         */
+        function renderRustData(value) {
+            if (!value) return "";
+            let cleanValue = value.trim();
+
+            // 1. STRIP WRAPPERS (Recursive) - Handles Some(...)
+            if (cleanValue.startsWith('Some(') && cleanValue.endsWith(')')) {
+                const inner = cleanValue.substring(5, cleanValue.length - 1);
+                return `<div style="border-left: 2px solid #a78bfa; padding-left: 8px; margin: 4px 0;">
+                          <span style="color: #a78bfa; font-size: 0.75em; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em;">Some</span>
+                          ${renderRustData(inner)}
+                        </div>`;
             }
-            
-            const title = mainMatch[1].trim();
-            const innerContent = mainMatch[2];
-            
-            let html = `<div style="color: #cbd5e1; font-family: 'Monaco', 'Courier New', monospace;">`;
-            html += `<div style="margin-bottom: 12px; padding: 8px; background: rgba(51, 65, 85, 0.5); border-radius: 4px;">`;
-            html += `<span style="color: #f472b6; font-weight: 700;">${escapeHtml(title)}</span> <span style="color: #cbd5e1;">{</span>`;
-            html += `</div>`;
-            
-            // Parse key-value pairs more intelligently
-            const fields = parseRustFields(innerContent);
-            
-            html += `<div style="padding-left: 16px; border-left: 2px solid #334155;">`;
-            fields.forEach((field, idx) => {
-                html += renderRustField(field, idx === fields.length - 1);
-            });
-            html += `</div>`;
-            html += `<span style="color: #cbd5e1;">}</span></div>`;
-            
-            return html;
+
+            // 2. DETECT ARRAY (Matches: Array [...] or [...])
+            if (cleanValue.startsWith('Array [') || (cleanValue.startsWith('[') && cleanValue.endsWith(']'))) {
+                return renderCollapsibleArray(cleanValue);
+            }
+
+            // 3. DETECT OBJECT (Matches: Object {...} or {...})
+            if (cleanValue.startsWith('Object {') || (cleanValue.startsWith('{') && cleanValue.endsWith('}'))) {
+                return renderCollapsibleObject(cleanValue);
+            }
+
+            // 4. DETECT RUST PRIMITIVES
+            if (cleanValue.startsWith('Bool(')) return `<span style="color: #60a5fa;">${cleanValue.match(/\((.*?)\)/)[1]}</span>`;
+            if (cleanValue.startsWith('String(')) {
+                const match = cleanValue.match(/\("(.*?)"\)/s); // 's' flag for multiline strings
+                return `<span style="color: #86efac; white-space: pre-wrap;">"${escapeHtml(match ? match[1] : cleanValue)}"</span>`;
+            }
+            if (cleanValue.startsWith('Number(')) return `<span style="color: #34d399;">${cleanValue.match(/\((.*?)\)/)[1]}</span>`;
+
+            // 5. FINAL FALLBACK - No 500 character limit here
+            return `<span class="text-slate-400 break-words">${escapeHtml(cleanValue)}</span>`;
         }
 
         function renderSmartRustStruct(content) {
@@ -1647,76 +1657,6 @@
             
             return html;
         }
-
-        function renderRustValueSmart(value) {
-    if (!value) return `<span style="color: #cbd5e1;"></span>`;
-    value = value.trim();
-
-    // 1. Handle Null/None
-    if (value === 'None' || value === 'Null' || value === 'null') {
-        return `<span style="color: #fcd34d; font-weight: 600;">null</span>`;
-    }
-
-    // 2. Handle Primitives (Bool, Number, String wrappers from your test.txt)
-    // Matches: Bool(true)
-    if (value.match(/^Bool\((true|false)\)$/)) {
-        const match = value.match(/^Bool\((true|false)\)$/);
-        return `<span style="color: #60a5fa; font-weight: 600;">${match[1]}</span>`;
-    }
-    // Matches: Number(123)
-    if (value.match(/^Number\((-?\d+(\.\d+)?)\)$/)) {
-        const match = value.match(/^Number\((-?\d+(\.\d+)?)\)$/);
-        return `<span style="color: #34d399; font-weight: 600;">${match[1]}</span>`;
-    }
-    // Matches: String("...")
-    if (value.startsWith('String("') && value.endsWith('")')) {
-        const inner = value.substring(8, value.length - 2); // Remove String(" and ")
-        return `<span style="color: #86efac;">"${escapeHtml(inner)}"</span>`;
-    }
-
-    // 3. Handle Wrappers: Some(...), Ok(...), Err(...)
-    // We must do this BEFORE size checks, or the wrapper makes it look like a blob
-    if (value.startsWith('Some(') || value.startsWith('Ok(') || value.startsWith('Err(')) {
-        // Find the closing parenthesis. Since there might be nested parens, we need to be smart.
-        const type = value.substring(0, value.indexOf('('));
-        if (value.endsWith(')')) {
-            const inner = value.substring(type.length + 1, value.length - 1);
-            return `<span style="color: #a78bfa; font-weight: 500;">${type}(</span><div style="margin-left: 10px; border-left: 1px solid #a78bfa; padding-left: 10px;">${renderRustValueSmart(inner)}</div><span style="color: #a78bfa; font-weight: 500;">)</span>`;
-        }
-    }
-
-    // 4. Handle Arrays: Array [...] or just [...]
-    if (value.startsWith('Array [') || value.startsWith('[')) {
-        return renderArrayValueSmart(value);
-    }
-
-    // 5. Handle Objects: Object {...} or just {...}
-    if (value.startsWith('Object {') || value.startsWith('{')) {
-        return renderObjectValueSmart(value);
-    }
-
-    // 6. Handle plain booleans/numbers (if not wrapped)
-    if (value === 'true' || value === 'false') {
-        return `<span style="color: #60a5fa; font-weight: 600;">${value}</span>`;
-    }
-    if (/^-?\d+(\.\d+)?$/.test(value)) {
-        return `<span style="color: #34d399; font-weight: 600;">${value}</span>`;
-    }
-    
-    // 7. Handle plain quoted strings
-    if (value.startsWith('"') && value.endsWith('"')) {
-        const str = value.slice(1, -1);
-        return `<span style="color: #86efac;">"${escapeHtml(str)}"</span>`;
-    }
-
-    // 8. Fallback: If it is huge and unstructured, THEN treat as blob
-    if (value.length > 500) {
-        return renderLargeBlobSmart(value);
-    }
-
-    // 9. Default catch-all
-    return `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
-}
 
         function renderNestedStructure(value, depth = 0) {
             // For [Object ...], Array [...], or raw nested structures
@@ -1994,24 +1934,6 @@
     return html;
 }
 
-
-        function renderComplexStructureSmart(value) {
-            // For mixed complex structures, render with smart formatting
-            const uniqueId = 'cplx_' + Math.random().toString(36).substr(2, 9);
-            
-            let html = `<div style="color: #cbd5e1; margin-top: 4px;">`;
-            html += `<div style="display: flex; align-items: center; gap: 8px; padding: 8px; background: rgba(139, 92, 246, 0.2); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 3px; margin-bottom: 8px; cursor: pointer;" onclick="const c = document.getElementById('${uniqueId}_c'); c.style.display = c.style.display === 'none' ? 'block' : 'none'; this.querySelector('[data-t]').textContent = this.querySelector('[data-t]').textContent === '▼' ? '▶' : '▼';">
-                <span data-t style="color: #a78bfa; font-weight: 600;">▼</span>
-                <span style="color: #a78bfa; font-weight: 600;">Complex Structure</span>
-            </div>`;
-            
-            html += `<div id="${uniqueId}_c" style="padding: 12px; background: rgba(15, 23, 42, 0.8); border: 1px solid #334155; border-radius: 4px; max-height: 400px; overflow: auto; font-family: monospace; font-size: 11px; line-height: 1.5;">`;
-            html += syntaxHighlightValue(value);
-            html += `</div></div>`;
-            
-            return html;
-        }
-
         function renderLargeBlobSmart(value) {
             const uniqueId = 'blob_' + Math.random().toString(36).substr(2, 9);
             const size = Math.round(value.length / 1024);
@@ -2089,7 +2011,7 @@
             html += `<div style="display: flex; align-items: flex-start; gap: 12px;">`;
             html += `<span style="color: #d8b4fe; font-weight: 600; flex-shrink: 0; min-width: 200px; word-break: break-word;">${escapeHtml(key)}</span>`;
             html += `<span style="color: #cbd5e1; flex-shrink: 0;">:</span>`;
-            html += `<div style="flex: 1; word-break: break-word; overflow-wrap: break-word;">${renderRustValue(value)}</div>`;
+            html += `<div style="flex: 1; word-break: break-word; overflow-wrap: break-word;">${renderRustData(value)}</div>`;
             html += `</div>`;
             if (!isLast) html += `<span style="color: #cbd5e1; margin-left: auto;">,</span>`;
             html += `</div>`;
@@ -2097,46 +2019,42 @@
             return html;
         }
 
-        function renderRustValue(value) {
-            // Detect type
-            if (value === 'None' || value === 'Null') {
-                return `<span style="color: #fcd34d; font-weight: 600;">null</span>`;
-            }
-            if (value === 'true' || value === 'false') {
-                return `<span style="color: #60a5fa; font-weight: 600;">${value}</span>`;
-            }
-            if (/^-?\d+(\.\d+)?$/.test(value)) {
-                return `<span style="color: #34d399; font-weight: 600;">${value}</span>`;
-            }
-            if (value.startsWith('"') && value.endsWith('"')) {
-                const str = value.slice(1, -1);
-                return `<span style="color: #86efac;">"${escapeHtml(str)}"</span>`;
-            }
-            
-            // Complex structures - parse and display with toggle
-            if (value.startsWith('Some(') || value.startsWith('Ok(')) {
-                const inner = value.slice(5, -1);
-                const expanded = renderComplexValue(inner);
-                if (typeof expanded === 'string' && expanded.includes('<div')) {
-                    return `<div style="color: #a78bfa; margin-top: 4px;">${expanded}</div>`;
-                }
-                return `<span style="color: #a78bfa; font-style: italic;">${expanded}</span>`;
-            }
-            if (value.startsWith('Array') || value.startsWith('[')) {
-                return renderArrayValue(value);
-            }
-            if (value.startsWith('Object') || value.startsWith('{')) {
-                return renderObjectValue(value);
-            }
-            
-            // Very large blob - might be unformatted JSON or nested structure
-            if (value.length > 500) {
-                return renderLargeBlob(value);
-            }
-            
-            // Default - return full value
-            return `<span style="color: #cbd5e1; white-space: pre-wrap; word-break: break-word;">${escapeHtml(value)}</span>`;
-        }
+        function renderRustValueSmart(value) {
+    if (!value) return "";
+    let cleanValue = value.trim();
+
+    // 1. STRIP WRAPPERS FIRST (Recursive)
+    // This handles: Some([Object...])
+    if (cleanValue.startsWith('Some(') && cleanValue.endsWith(')')) {
+        const inner = cleanValue.substring(5, cleanValue.length - 1);
+        return `<div style="border-left: 2px solid #a78bfa; padding-left: 8px;">
+                  <span style="color: #a78bfa; font-size: 0.8em; font-weight: bold;">SOME</span>
+                  ${renderRustValueSmart(inner)}
+                </div>`;
+    }
+
+    // 2. DETECT ARRAY (Matches: Array [...] or [...])
+    if (cleanValue.startsWith('Array [') || (cleanValue.startsWith('[') && cleanValue.endsWith(']'))) {
+        return renderCollapsibleArray(cleanValue);
+    }
+
+    // 3. DETECT OBJECT (Matches: Object {...} or {...})
+    if (cleanValue.startsWith('Object {') || (cleanValue.startsWith('{') && cleanValue.endsWith('}'))) {
+        return renderCollapsibleObject(cleanValue);
+    }
+
+    // 4. DETECT RUST PRIMITIVES (From your test.txt)
+    if (cleanValue.startsWith('Bool(')) return `<span style="color: #60a5fa;">${cleanValue.match(/\((.*?)\)/)[1]}</span>`;
+    if (cleanValue.startsWith('String(')) return `<span style="color: #86efac;">${cleanValue.match(/\("(.*?)"\)/)[1]}</span>`;
+    if (cleanValue.startsWith('Number(')) return `<span style="color: #34d399;">${cleanValue.match(/\((.*?)\)/)[1]}</span>`;
+
+    // 5. FALLBACK FOR TRULY RAW TEXT
+    if (cleanValue.length > 500) {
+        return `<pre style="white-space: pre-wrap; color: #94a3b8; font-size: 0.85em; background: #0f172a; padding: 10px; border-radius: 4px;">${escapeHtml(cleanValue)}</pre>`;
+    }
+
+    return `<span>${escapeHtml(cleanValue)}</span>`;
+}
 
         function renderLargeBlob(value) {
             const uniqueId = 'blob_' + Math.random().toString(36).substr(2, 9);
@@ -2208,7 +2126,7 @@
                     html += `<div style="margin: 4px 0; display: flex; gap: 8px; align-items: flex-start;">
                         <span style="color: #c4b5fd; min-width: 150px; flex-shrink: 0;">${escapeHtml(k)}</span>
                         <span style="color: #a78bfa;">:</span>
-                        <div style="flex: 1; word-break: break-word;">${renderRustValue(v)}</div>
+                        <div style="flex: 1; word-break: break-word;">${renderRustData(v)}</div>
                     </div>`;
                 }
             });
@@ -2255,7 +2173,7 @@
                                 <span style="color: #d8b4fe; font-weight: 500; min-width: 180px; flex-shrink: 0; word-break: break-word;">${escapeHtml(k)}</span>
                                 <span style="color: #cbd5e1;">:</span>
                             </div>
-                            <div style="margin-left: 20px;">${renderRustValue(v)}</div>
+                            <div style="margin-left: 20px;">${renderRustData(v)}</div>
                         </div>`;
                     }
                 });
@@ -2272,7 +2190,7 @@
                                 <span style="color: #d8b4fe; font-weight: 500; min-width: 200px; flex-shrink: 0; word-break: break-word;">${escapeHtml(k)}</span>
                                 <span style="color: #cbd5e1; flex-shrink: 0;">:</span>
                             </div>
-                            <div style="margin-left: 20px; word-break: break-word;">${renderRustValue(v)}</div>
+                            <div style="margin-left: 20px; word-break: break-word;">${renderRustData(v)}</div>
                         </div>`;
                     }
                 });
@@ -2311,12 +2229,12 @@
             
             if (count <= 5) {
                 items.forEach((item, idx) => {
-                    html += `<div style="margin: 4px 0; padding: 6px 8px; background: rgba(15, 23, 42, 0.5); border-radius: 3px; border-left: 2px solid #475569; color: #cbd5e1;">[${idx}] ${renderRustValue(item.trim())}</div>`;
+                    html += `<div style="margin: 4px 0; padding: 6px 8px; background: rgba(15, 23, 42, 0.5); border-radius: 3px; border-left: 2px solid #475569; color: #cbd5e1;">[${idx}] ${renderRustData(item.trim())}</div>`;
                 });
             } else {
                 // Show first 10, then message about rest
                 items.slice(0, 10).forEach((item, idx) => {
-                    html += `<div style="margin: 4px 0; padding: 6px 8px; background: rgba(15, 23, 42, 0.5); border-radius: 3px; border-left: 2px solid #475569; color: #cbd5e1;">[${idx}] ${renderRustValue(item.trim())}</div>`;
+                    html += `<div style="margin: 4px 0; padding: 6px 8px; background: rgba(15, 23, 42, 0.5); border-radius: 3px; border-left: 2px solid #475569; color: #cbd5e1;">[${idx}] ${renderRustData(item.trim())}</div>`;
                 });
                 html += `<div style="margin: 12px 0; padding: 10px; background: rgba(59, 130, 246, 0.1); border-radius: 3px; border-left: 3px solid #3b82f6; color: #60a5fa; font-style: italic;">
                     ... and ${count - 10} more items
@@ -2326,6 +2244,56 @@
             html += `</div></div>`;
             return html;
         }
+function renderCollapsibleObject(value) {
+    // Extract content inside { ... }
+    const start = value.indexOf('{') + 1;
+    const end = value.lastIndexOf('}');
+    const content = value.substring(start, end);
+    const fields = parseRustFieldsSmart(content); 
+    const id = 'obj_' + Math.random().toString(36).substr(2, 9);
+
+    return `
+        <div class="mt-1">
+            <div onclick="document.getElementById('${id}').classList.toggle('hidden')" class="cursor-pointer hover:bg-slate-700 p-1 rounded flex items-center gap-2 bg-slate-800/50">
+                <span class="text-[10px] text-slate-500">▼</span>
+                <span class="text-blue-400 font-bold text-xs">Object</span>
+                <span class="text-slate-500 text-[10px]">{ ${fields.length} keys }</span>
+            </div>
+            <div id="${id}" class="pl-4 border-l border-slate-700 ml-2 space-y-1 mt-1">
+                ${fields.map(f => {
+                    const colonIdx = f.indexOf(':');
+                    const key = f.substring(0, colonIdx).trim();
+                    const val = f.substring(colonIdx + 1).trim();
+                    return `<div><span class="text-purple-300">${key}:</span> ${renderRustData(val)}</div>`;
+                }).join('')}
+            </div>
+        </div>`;
+}
+
+function renderCollapsibleArray(value) {
+    const start = value.indexOf('[') + 1;
+    const end = value.lastIndexOf(']');
+    const content = value.substring(start, end);
+    const items = parseRustFieldsSmart(content);
+    const id = 'arr_' + Math.random().toString(36).substr(2, 9);
+
+    return `
+        <div class="mt-1">
+            <div onclick="document.getElementById('${id}').classList.toggle('hidden')" class="cursor-pointer hover:bg-slate-700 p-1 rounded flex items-center gap-2 bg-slate-800/50">
+                <span class="text-[10px] text-slate-500">▼</span>
+                <span class="text-emerald-400 font-bold text-xs">Array</span>
+                <span class="text-slate-500 text-[10px]">[ ${items.length} items ]</span>
+            </div>
+            <div id="${id}" class="pl-4 border-l border-slate-700 ml-2 space-y-1 mt-1">
+                ${items.map((item, idx) => `
+                    <div class="flex gap-2">
+                        <span class="text-slate-600 text-[10px]">${idx}:</span>
+                        <div class="flex-1">${renderRustData(item)}</div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>`;
+}
 
         window.parseAgentLogs = parseAgentLogs;
         window.filterAgentLogs = filterAgentLogs;
@@ -2336,7 +2304,8 @@
         window.parseArchiveLog = parseArchiveLog;
         window.handleFileSelect = handleFileSelect;
         window.processLogs = processLogs;
-
+    
+        
     </script>
 </body>
 </html>
