@@ -1583,49 +1583,48 @@
         }
 
         function parseRustFieldsSmart(content) {
-            const fields = [];
-            let current = '';
-            let depth = 0;
-            let inString = false;
-            let escapeNext = false;
-            
-            for (let i = 0; i < content.length; i++) {
-                const char = content[i];
-                const prevChar = i > 0 ? content[i - 1] : '';
-                
-                if (escapeNext) {
-                    current += char;
-                    escapeNext = false;
-                    continue;
-                }
-                
-                if (char === '\\' && inString) {
-                    escapeNext = true;
-                    current += char;
-                    continue;
-                }
-                
-                if (char === '"' && prevChar !== '\\') {
-                    inString = !inString;
-                }
-                
-                if (!inString) {
-                    if (char === '{' || char === '[' || char === '(') depth++;
-                    if (char === '}' || char === ']' || char === ')') depth--;
-                }
-                
-                if (char === ',' && depth === 0 && !inString) {
-                    const trimmed = current.trim();
-                    if (trimmed) fields.push(trimmed);
-                    current = '';
-                } else {
-                    current += char;
-                }
-            }
-            
-            if (current.trim()) fields.push(current.trim());
-            return fields;
+    const fields = [];
+    let current = '';
+    let depth = 0;
+    let inString = false;
+    let escapeNext = false;
+    
+    for (let i = 0; i < content.length; i++) {
+        const char = content[i];
+        
+        if (escapeNext) {
+            current += char;
+            escapeNext = false;
+            continue;
         }
+        
+        if (char === '\\' && inString) {
+            escapeNext = true;
+            current += char;
+            continue;
+        }
+        
+        if (char === '"') {
+            inString = !inString;
+        }
+        
+        if (!inString) {
+            if (char === '{' || char === '[' || char === '(') depth++;
+            if (char === '}' || char === ']' || char === ')') depth--;
+        }
+        
+        if (char === ',' && depth === 0 && !inString) {
+            const trimmed = current.trim();
+            if (trimmed) fields.push(trimmed);
+            current = '';
+        } else {
+            current += char;
+        }
+    }
+    
+    if (current.trim()) fields.push(current.trim());
+    return fields;
+}
 
         function renderRustFieldSmart(fieldStr, isLast) {
             const colonIdx = fieldStr.indexOf(':');
@@ -1650,55 +1649,74 @@
         }
 
         function renderRustValueSmart(value) {
-            // Detect and format different Rust types
-            if (value === 'None' || value === 'Null') {
-                return `<span style="color: #fcd34d; font-weight: 600;">null</span>`;
-            }
-            if (value === 'true' || value === 'false') {
-                return `<span style="color: #60a5fa; font-weight: 600;">${value}</span>`;
-            }
-            if (/^-?\d+(\.\d+)?$/.test(value)) {
-                return `<span style="color: #34d399; font-weight: 600;">${value}</span>`;
-            }
-            if (value.startsWith('"') && value.endsWith('"')) {
-                const str = value.slice(1, -1);
-                return `<span style="color: #86efac;">"${escapeHtml(str)}"</span>`;
-            }
-            
-            // Handle Some(...), Ok(...), etc.
-            if (value.startsWith('Some(') || value.startsWith('Ok(')) {
-                const inner = value.slice(5, -1);
-                return `<span style="color: #a78bfa; font-weight: 500;">Some(</span>${renderRustValueSmart(inner)}<span style="color: #a78bfa; font-weight: 500;">)</span>`;
-            }
-            
-            // Handle Array
-            if (value.startsWith('Array [')) {
-                return renderArrayValueSmart(value);
-            }
-            
-            // Handle Object
-            if (value.startsWith('Object {')) {
-                return renderObjectValueSmart(value);
-            }
-            
-            // Handle raw nested [ or { (detected in blob content)
-            if ((value.startsWith('[') && value.endsWith(']')) || (value.startsWith('{') && value.endsWith('}'))) {
-                return renderNestedStructure(value, 0);
-            }
-            
-            // Large values with nested content
-            if ((value.includes('[') || value.includes('{')) && value.length > 300) {
-                return renderComplexStructureSmart(value);
-            }
-            
-            // Large values
-            if (value.length > 500) {
-                return renderLargeBlobSmart(value);
-            }
-            
-            // Default
-            return `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
+    if (!value) return `<span style="color: #cbd5e1;"></span>`;
+    value = value.trim();
+
+    // 1. Handle Null/None
+    if (value === 'None' || value === 'Null' || value === 'null') {
+        return `<span style="color: #fcd34d; font-weight: 600;">null</span>`;
+    }
+
+    // 2. Handle Primitives (Bool, Number, String wrappers from your test.txt)
+    // Matches: Bool(true)
+    if (value.match(/^Bool\((true|false)\)$/)) {
+        const match = value.match(/^Bool\((true|false)\)$/);
+        return `<span style="color: #60a5fa; font-weight: 600;">${match[1]}</span>`;
+    }
+    // Matches: Number(123)
+    if (value.match(/^Number\((-?\d+(\.\d+)?)\)$/)) {
+        const match = value.match(/^Number\((-?\d+(\.\d+)?)\)$/);
+        return `<span style="color: #34d399; font-weight: 600;">${match[1]}</span>`;
+    }
+    // Matches: String("...")
+    if (value.startsWith('String("') && value.endsWith('")')) {
+        const inner = value.substring(8, value.length - 2); // Remove String(" and ")
+        return `<span style="color: #86efac;">"${escapeHtml(inner)}"</span>`;
+    }
+
+    // 3. Handle Wrappers: Some(...), Ok(...), Err(...)
+    // We must do this BEFORE size checks, or the wrapper makes it look like a blob
+    if (value.startsWith('Some(') || value.startsWith('Ok(') || value.startsWith('Err(')) {
+        // Find the closing parenthesis. Since there might be nested parens, we need to be smart.
+        const type = value.substring(0, value.indexOf('('));
+        if (value.endsWith(')')) {
+            const inner = value.substring(type.length + 1, value.length - 1);
+            return `<span style="color: #a78bfa; font-weight: 500;">${type}(</span><div style="margin-left: 10px; border-left: 1px solid #a78bfa; padding-left: 10px;">${renderRustValueSmart(inner)}</div><span style="color: #a78bfa; font-weight: 500;">)</span>`;
         }
+    }
+
+    // 4. Handle Arrays: Array [...] or just [...]
+    if (value.startsWith('Array [') || value.startsWith('[')) {
+        return renderArrayValueSmart(value);
+    }
+
+    // 5. Handle Objects: Object {...} or just {...}
+    if (value.startsWith('Object {') || value.startsWith('{')) {
+        return renderObjectValueSmart(value);
+    }
+
+    // 6. Handle plain booleans/numbers (if not wrapped)
+    if (value === 'true' || value === 'false') {
+        return `<span style="color: #60a5fa; font-weight: 600;">${value}</span>`;
+    }
+    if (/^-?\d+(\.\d+)?$/.test(value)) {
+        return `<span style="color: #34d399; font-weight: 600;">${value}</span>`;
+    }
+    
+    // 7. Handle plain quoted strings
+    if (value.startsWith('"') && value.endsWith('"')) {
+        const str = value.slice(1, -1);
+        return `<span style="color: #86efac;">"${escapeHtml(str)}"</span>`;
+    }
+
+    // 8. Fallback: If it is huge and unstructured, THEN treat as blob
+    if (value.length > 500) {
+        return renderLargeBlobSmart(value);
+    }
+
+    // 9. Default catch-all
+    return `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
+}
 
         function renderNestedStructure(value, depth = 0) {
             // For [Object ...], Array [...], or raw nested structures
@@ -1874,91 +1892,108 @@
         }
 
         function renderArrayValueSmart(value) {
-            const innerMatch = value.match(/Array \[(.*)\]$/s);
-            if (!innerMatch) {
-                return `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
-            }
-            
-            const inner = innerMatch[1].trim();
-            if (!inner) {
-                return `<span style="color: #cbd5e1;">Array []</span>`;
-            }
-            
-            // Smart parse items handling nested structures
-            const items = parseRustFieldsSmart(inner);
-            const count = items.length;
-            const uniqueId = 'arr_' + Math.random().toString(36).substr(2, 9);
-            
-            let html = `<div style="color: #cbd5e1; margin-top: 4px;">`;
-            html += `<div style="display: flex; align-items: center; gap: 8px; padding: 8px; background: rgba(51, 65, 85, 0.5); border-radius: 3px; margin-bottom: 8px; cursor: pointer;" onclick="const c = document.getElementById('${uniqueId}_c'); c.style.display = c.style.display === 'none' ? 'block' : 'none'; this.querySelector('[data-t]').textContent = this.querySelector('[data-t]').textContent === '▼' ? '▶' : '▼';">
-                <span data-t style="color: #a78bfa; font-weight: 600;">▼</span>
-                <span style="color: #60a5fa; font-weight: 600;">Array</span>
-                <span style="color: #a78bfa;">[${count}]</span>
-            </div>`;
-            
-            html += `<div id="${uniqueId}_c" style="padding-left: 16px; border-left: 2px solid #334155;">`;
-            
-            const showCount = Math.min(10, count);
-            for (let i = 0; i < showCount; i++) {
-                html += `<div style="margin: 6px 0; padding: 6px 8px; background: ${i % 2 === 0 ? 'rgba(15, 23, 42, 0.4)' : 'rgba(30, 41, 59, 0.4)'}; border-radius: 3px; border-left: 2px solid #475569;">[${i}] ${renderRustValueSmart(items[i].trim())}</div>`;
-            }
-            
-            if (count > 10) {
-                html += `<div style="margin: 10px 0; padding: 8px; background: rgba(59, 130, 246, 0.1); border-radius: 3px; border-left: 3px solid #3b82f6; color: #60a5fa; font-style: italic;">... and ${count - 10} more items</div>`;
-            }
-            
-            html += `</div></div>`;
-            return html;
-        }
+    let inner = value;
+    if (value.startsWith('Array [')) {
+        inner = value.substring(6).trim(); // Remove "Array "
+    }
+    
+    if (inner.startsWith('[') && inner.endsWith(']')) {
+        inner = inner.substring(1, inner.length - 1).trim();
+    } else {
+        return `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
+    }
+    
+    // If empty
+    if (!inner) return `<span style="color: #cbd5e1;">[]</span>`;
+
+    const items = parseRustFieldsSmart(inner); // Reuse the smart field parser, it splits by comma correctly respecting depth
+    const count = items.length;
+    const uniqueId = 'arr_' + Math.random().toString(36).substr(2, 9);
+    
+    let html = `<div style="color: #cbd5e1; margin-top: 4px;">`;
+    
+    // Header
+    html += `<div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(51, 65, 85, 0.6); border-radius: 4px; margin-bottom: 4px; cursor: pointer; user-select: none;" onclick="const c = document.getElementById('${uniqueId}_c'); const isHidden = c.style.display === 'none'; c.style.display = isHidden ? 'block' : 'none'; this.querySelector('[data-t]').textContent = isHidden ? '▼' : '▶';">
+        <span data-t style="color: #a78bfa; font-weight: 800; font-size: 10px;">▼</span>
+        <span style="color: #60a5fa; font-weight: 600;">Array</span>
+        <span style="color: #94a3b8; font-size: 0.9em;">[ ${count} items ]</span>
+    </div>`;
+    
+    // Content
+    html += `<div id="${uniqueId}_c" style="padding-left: 10px; border-left: 2px solid #334155; margin-left: 4px;">`;
+    
+    // Render all items (removing the "Show top 10" limit because users usually want to see the specific policy in the list)
+    items.forEach((item, idx) => {
+        const bgColor = idx % 2 === 0 ? 'rgba(15, 23, 42, 0.3)' : 'transparent';
+        html += `<div style="padding: 4px; background: ${bgColor}; border-radius: 2px; display: flex; gap: 8px;">
+            <span style="color: #64748b; font-size: 0.9em; user-select: none;">${idx}.</span>
+            <div style="flex: 1; min-width: 0;">${renderRustValueSmart(item.trim())}</div>
+        </div>`;
+    });
+    
+    html += `</div></div>`;
+    return html;
+}
 
         function renderObjectValueSmart(value) {
-            const innerMatch = value.match(/Object \{(.*)\}$/s);
-            if (!innerMatch) {
-                return `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
-            }
+    // Strip "Object " prefix if present
+    let inner = value;
+    if (value.startsWith('Object {')) {
+        inner = value.substring(7).trim(); // Remove "Object "
+    }
+    
+    // Strip outer braces
+    if (inner.startsWith('{') && inner.endsWith('}')) {
+        inner = inner.substring(1, inner.length - 1).trim();
+    } else {
+        // Malformed or different structure, return as text
+        return `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
+    }
+    
+    if (!inner) return `<span style="color: #cbd5e1;">{}</span>`;
+
+    const fields = parseRustFieldsSmart(inner);
+    const count = fields.length;
+    const uniqueId = 'obj_' + Math.random().toString(36).substr(2, 9);
+    
+    // Header
+    let html = `<div style="color: #cbd5e1; margin-top: 4px;">`;
+    html += `<div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(51, 65, 85, 0.6); border-radius: 4px; margin-bottom: 4px; cursor: pointer; user-select: none;" onclick="const c = document.getElementById('${uniqueId}_c'); const isHidden = c.style.display === 'none'; c.style.display = isHidden ? 'block' : 'none'; this.querySelector('[data-t]').textContent = isHidden ? '▼' : '▶';">
+        <span data-t style="color: #a78bfa; font-weight: 800; font-size: 10px;">▼</span>
+        <span style="color: #60a5fa; font-weight: 600;">Object</span>
+        <span style="color: #94a3b8; font-size: 0.9em;">{ ${count} fields }</span>
+    </div>`;
+    
+    // Content
+    html += `<div id="${uniqueId}_c" style="padding-left: 10px; border-left: 2px solid #334155; margin-left: 4px;">`;
+    
+    fields.forEach((field, idx) => {
+        // Parse "Key: Value"
+        // We have to be careful splitting by colon because values might contain colons
+        // Luckily, parseRustFieldsSmart splits the top level items, so we just look for the *first* colon
+        const colonIdx = field.indexOf(':');
+        
+        if (colonIdx > -1) {
+            const k = field.substring(0, colonIdx).trim();
+            const v = field.substring(colonIdx + 1).trim();
+            const bgColor = idx % 2 === 0 ? 'rgba(15, 23, 42, 0.3)' : 'transparent';
             
-            const inner = innerMatch[1].trim();
-            if (!inner) {
-                return `<span style="color: #cbd5e1;">Object {}</span>`;
-            }
-            
-            const fields = parseRustFieldsSmart(inner);
-            const count = fields.length;
-            const uniqueId = 'obj_' + Math.random().toString(36).substr(2, 9);
-            
-            let html = `<div style="color: #cbd5e1; margin-top: 4px;">`;
-            html += `<div style="display: flex; align-items: center; gap: 8px; padding: 8px; background: rgba(51, 65, 85, 0.5); border-radius: 3px; margin-bottom: 8px; cursor: pointer;" onclick="const c = document.getElementById('${uniqueId}_c'); c.style.display = c.style.display === 'none' ? 'block' : 'none'; this.querySelector('[data-t]').textContent = this.querySelector('[data-t]').textContent === '▼' ? '▶' : '▼';">
-                <span data-t style="color: #a78bfa; font-weight: 600;">▼</span>
-                <span style="color: #60a5fa; font-weight: 600;">Object</span>
-                <span style="color: #a78bfa;">{${count}}</span>
+            html += `<div style="padding: 4px; background: ${bgColor}; border-radius: 2px;">
+                <div style="display: flex; gap: 8px; align-items: flex-start;">
+                    <span style="color: #d8b4fe; font-weight: 500; white-space: nowrap;">${escapeHtml(k)}</span>
+                    <span style="color: #64748b;">:</span>
+                    <div style="flex: 1; min-width: 0;">${renderRustValueSmart(v)}</div>
+                </div>
             </div>`;
-            
-            html += `<div id="${uniqueId}_c" style="padding-left: 16px; border-left: 2px solid #334155;">`;
-            
-            const showCount = Math.min(8, count);
-            for (let i = 0; i < showCount; i++) {
-                const colonIdx = fields[i].indexOf(':');
-                if (colonIdx > -1) {
-                    const k = fields[i].substring(0, colonIdx).trim();
-                    const v = fields[i].substring(colonIdx + 1).trim();
-                    const bgColor = i % 2 === 0 ? 'rgba(15, 23, 42, 0.4)' : 'rgba(30, 41, 59, 0.4)';
-                    html += `<div style="margin: 6px 0; padding: 8px; background: ${bgColor}; border-radius: 3px; border-left: 2px solid #475569;">
-                        <div style="display: flex; gap: 8px; align-items: flex-start;">
-                            <span style="color: #d8b4fe; font-weight: 500; min-width: 180px; flex-shrink: 0; word-break: break-word;">${escapeHtml(k)}</span>
-                            <span style="color: #cbd5e1;">:</span>
-                            <div style="flex: 1; word-break: break-word;">${renderRustValueSmart(v)}</div>
-                        </div>
-                    </div>`;
-                }
-            }
-            
-            if (count > 8) {
-                html += `<div style="margin: 10px 0; padding: 8px; background: rgba(59, 130, 246, 0.1); border-radius: 3px; border-left: 3px solid #3b82f6; color: #60a5fa; font-style: italic;">... and ${count - 8} more fields</div>`;
-            }
-            
-            html += `</div></div>`;
-            return html;
+        } else {
+            html += `<div style="padding: 4px;">${renderRustValueSmart(field)}</div>`;
         }
+    });
+    
+    html += `</div></div>`;
+    return html;
+}
+
 
         function renderComplexStructureSmart(value) {
             // For mixed complex structures, render with smart formatting
