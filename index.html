@@ -1482,10 +1482,10 @@
             
             // If we have a parsed object, use pretty display
             if (parsedObj) {
-                html += `<div class="bg-slate-950 p-4 rounded-lg border border-slate-700 shadow-lg overflow-auto max-h-96" style="font-size: 11px;">${renderPrettyJson(parsedObj)}</div>`;
+                html += `<div class="bg-slate-950 p-4 rounded-lg border border-slate-700 shadow-lg overflow-auto" style="max-height: 70vh; font-size: 11px;">${renderPrettyJson(parsedObj)}</div>`;
             } else {
                 // Parse as structured Rust data
-                html += `<div class="bg-slate-950 p-4 rounded-lg border border-slate-700 shadow-lg overflow-auto max-h-96" style="font-size: 12px;">${renderRustData(content)}</div>`;
+                html += `<div class="bg-slate-950 p-4 rounded-lg border border-slate-700 shadow-lg overflow-auto" style="max-height: 70vh; font-size: 12px;">${renderRustData(content)}</div>`;
             }
             
             html += `</div>`;
@@ -1525,7 +1525,7 @@
                         <div style="margin: 6px 0; display: flex; align-items: flex-start;">
                             <span style="color: #d8b4fe; font-weight: 500; min-width: 220px; flex-shrink: 0;">"${escapeHtml(key)}"</span>
                             <span style="color: #cbd5e1; margin: 0 8px; flex-shrink: 0;">:</span>
-                            <div style="flex: 1;">${renderPrettyJson(obj[key], depth + 1)}</div>
+                            <div style="flex: 1; word-break: break-word;">${renderPrettyJson(obj[key], depth + 1)}</div>
                             ${i < keys.length - 1 ? '<span style="color: #cbd5e1; margin-left: 8px;">,</span>' : ''}
                         </div>
                     `).join('')}
@@ -1621,7 +1621,7 @@
             html += `<div style="display: flex; align-items: flex-start; gap: 12px;">`;
             html += `<span style="color: #d8b4fe; font-weight: 600; flex-shrink: 0; min-width: 200px; word-break: break-word;">${escapeHtml(key)}</span>`;
             html += `<span style="color: #cbd5e1; flex-shrink: 0;">:</span>`;
-            html += `<div style="flex: 1;">${renderRustValue(value)}</div>`;
+            html += `<div style="flex: 1; word-break: break-word; overflow-wrap: break-word;">${renderRustValue(value)}</div>`;
             html += `</div>`;
             if (!isLast) html += `<span style="color: #cbd5e1; margin-left: auto;">,</span>`;
             html += `</div>`;
@@ -1642,24 +1642,149 @@
             }
             if (value.startsWith('"') && value.endsWith('"')) {
                 const str = value.slice(1, -1);
-                const shortStr = str.length > 120 ? str.substring(0, 117) + '...' : str;
-                return `<span style="color: #86efac;">"${escapeHtml(shortStr)}"</span>`;
-            }
-            if (value.startsWith('Some(') || value.startsWith('Ok(')) {
-                const inner = value.slice(5, -1);
-                return `<span style="color: #a78bfa; font-style: italic;">Some(${escapeHtml(inner.substring(0, 80))}${inner.length > 80 ? '...)' : ')'}</span>`;
-            }
-            if (value.startsWith('Array [') || value.startsWith('[')) {
-                const count = (value.match(/,/g) || []).length + 1;
-                return `<span style="color: #cbd5e1; background: rgba(51, 65, 85, 0.3); padding: 2px 6px; border-radius: 3px;">Array(${count} items)</span>`;
-            }
-            if (value.startsWith('Object {') || (value.startsWith('{') && !value.startsWith('{'))) {
-                const count = (value.match(/:/g) || []).length;
-                return `<span style="color: #cbd5e1; background: rgba(51, 65, 85, 0.3); padding: 2px 6px; border-radius: 3px;">Object(${count} fields)</span>`;
+                return `<span style="color: #86efac;">"${escapeHtml(str)}"</span>`;
             }
             
-            const shortVal = value.length > 100 ? value.substring(0, 97) + '...' : value;
-            return `<span style="color: #cbd5e1;">${escapeHtml(shortVal)}</span>`;
+            // Complex structures - parse and display with toggle
+            if (value.startsWith('Some(') || value.startsWith('Ok(')) {
+                const inner = value.slice(5, -1);
+                const expanded = renderComplexValue(inner);
+                if (typeof expanded === 'string' && expanded.includes('<div')) {
+                    return `<div style="color: #a78bfa; margin-top: 4px;">${expanded}</div>`;
+                }
+                return `<span style="color: #a78bfa; font-style: italic;">${expanded}</span>`;
+            }
+            if (value.startsWith('Array') || value.startsWith('[')) {
+                return renderArrayValue(value);
+            }
+            if (value.startsWith('Object') || value.startsWith('{')) {
+                return renderObjectValue(value);
+            }
+            
+            // Default - return full value
+            return `<span style="color: #cbd5e1; white-space: pre-wrap; word-break: break-word;">${escapeHtml(value)}</span>`;
+        }
+
+        function renderComplexValue(content) {
+            // Try to parse as nested structure
+            const fields = parseRustFields(content);
+            if (fields.length === 0) {
+                return escapeHtml(content);
+            }
+            
+            let html = `<div style="margin-top: 8px; padding: 8px; background: rgba(51, 65, 85, 0.3); border-radius: 4px; border-left: 2px solid #a78bfa;">`;
+            fields.forEach((field, idx) => {
+                const colonIdx = field.indexOf(':');
+                if (colonIdx > -1) {
+                    const k = field.substring(0, colonIdx).trim();
+                    const v = field.substring(colonIdx + 1).trim();
+                    html += `<div style="margin: 4px 0; display: flex; gap: 8px; align-items: flex-start;">
+                        <span style="color: #c4b5fd; min-width: 150px; flex-shrink: 0;">${escapeHtml(k)}</span>
+                        <span style="color: #a78bfa;">:</span>
+                        <div style="flex: 1; word-break: break-word;">${renderRustValue(v)}</div>
+                    </div>`;
+                }
+            });
+            html += `</div>`;
+            return html;
+        }
+
+        function renderArrayValue(value) {
+            const innerMatch = value.match(/\[(.*)\]$/s);
+            if (!innerMatch) {
+                return `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
+            }
+            
+            const inner = innerMatch[1].trim();
+            if (!inner) {
+                return `<span style="color: #cbd5e1;">[]</span>`;
+            }
+            
+            const items = parseRustFields(inner);
+            const count = items.length;
+            
+            let html = `<div style="color: #cbd5e1; margin-top: 4px;">
+                <div style="padding: 6px; background: rgba(51, 65, 85, 0.4); border-radius: 3px; margin-bottom: 4px;">
+                    <span style="color: #60a5fa; font-weight: 600;">Array</span> <span style="color: #a78bfa;">[${count} items]</span>
+                </div>`;
+            
+            if (count <= 5) {
+                html += `<div style="padding-left: 12px; border-left: 2px solid #334155;">`;
+                items.forEach((item, idx) => {
+                    html += `<div style="margin: 4px 0; color: #cbd5e1;">${renderRustValue(item.trim())}</div>`;
+                });
+                html += `</div>`;
+            } else {
+                html += `<div style="padding: 6px; background: rgba(51, 65, 85, 0.2); border-radius: 3px; color: #94a3b8; font-size: 0.9em;">
+                    Showing first 5 of ${count} items
+                </div>`;
+                html += `<div style="padding-left: 12px; border-left: 2px solid #334155;">`;
+                items.slice(0, 5).forEach((item, idx) => {
+                    html += `<div style="margin: 4px 0; color: #cbd5e1;">${renderRustValue(item.trim())}</div>`;
+                });
+                html += `</div>`;
+            }
+            
+            html += `</div>`;
+            return html;
+        }
+
+        function renderObjectValue(value) {
+            const innerMatch = value.match(/\{(.*)\}$/s);
+            if (!innerMatch) {
+                return `<span style="color: #cbd5e1;">${escapeHtml(value)}</span>`;
+            }
+            
+            const inner = innerMatch[1].trim();
+            if (!inner) {
+                return `<span style="color: #cbd5e1;">{}</span>`;
+            }
+            
+            const fields = parseRustFields(inner);
+            const count = fields.length;
+            
+            let html = `<div style="color: #cbd5e1; margin-top: 4px;">
+                <div style="padding: 6px; background: rgba(51, 65, 85, 0.4); border-radius: 3px; margin-bottom: 4px;">
+                    <span style="color: #60a5fa; font-weight: 600;">Object</span> <span style="color: #a78bfa;">{${count} fields}</span>
+                </div>`;
+            
+            if (count <= 5) {
+                html += `<div style="padding-left: 12px; border-left: 2px solid #334155;">`;
+                fields.forEach((field, idx) => {
+                    const colonIdx = field.indexOf(':');
+                    if (colonIdx > -1) {
+                        const k = field.substring(0, colonIdx).trim();
+                        const v = field.substring(colonIdx + 1).trim();
+                        html += `<div style="margin: 4px 0; display: flex; gap: 8px; align-items: flex-start;">
+                            <span style="color: #d8b4fe; min-width: 180px; flex-shrink: 0; word-break: break-word;">${escapeHtml(k)}</span>
+                            <span style="color: #cbd5e1;">:</span>
+                            <div style="flex: 1; word-break: break-word;">${renderRustValue(v)}</div>
+                        </div>`;
+                    }
+                });
+                html += `</div>`;
+            } else {
+                html += `<div style="padding: 6px; background: rgba(51, 65, 85, 0.2); border-radius: 3px; color: #94a3b8; font-size: 0.9em;">
+                    Showing first 5 of ${count} fields
+                </div>`;
+                html += `<div style="padding-left: 12px; border-left: 2px solid #334155;">`;
+                fields.slice(0, 5).forEach((field, idx) => {
+                    const colonIdx = field.indexOf(':');
+                    if (colonIdx > -1) {
+                        const k = field.substring(0, colonIdx).trim();
+                        const v = field.substring(colonIdx + 1).trim();
+                        html += `<div style="margin: 4px 0; display: flex; gap: 8px; align-items: flex-start;">
+                            <span style="color: #d8b4fe; min-width: 180px; flex-shrink: 0; word-break: break-word;">${escapeHtml(k)}</span>
+                            <span style="color: #cbd5e1;">:</span>
+                            <div style="flex: 1; word-break: break-word;">${renderRustValue(v)}</div>
+                        </div>`;
+                    }
+                });
+                html += `</div>`;
+            }
+            
+            html += `</div>`;
+            return html;
         }
 
         window.parseAgentLogs = parseAgentLogs;
