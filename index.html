@@ -27,6 +27,7 @@
             z-index: 10;
         }
 
+        /* Tab styles */
         .tabs { display: flex; gap: 0.5rem; border-bottom: 1px solid #e6edf3; margin-bottom: 1rem; }
         .tab-btn {
             padding: 0.5rem 0.75rem;
@@ -45,9 +46,11 @@
         .tab-panel { display: none; }
         .tab-panel.active { display: block; }
 
+        /* Wider layout for tables */
         .app-container { max-width: 1200px; }
         .table-wrap { width: 100%; overflow-x: auto; }
 
+        /* Pagination controls */
         .pg-btn { padding: 6px 10px; border-radius: 6px; border: 1px solid #d1d5db; background: white; cursor: pointer; margin-right:6px; }
         .pg-btn.active { background: #eef2ff; border-color: #c7d2fe; }
         .pg-nav { display:flex; gap:8px; align-items:center; }
@@ -129,6 +132,7 @@
     </div>
 
     <script>
+        // --- Globals ---
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         let g_analysisStats = {};
@@ -171,20 +175,32 @@
         async function processLogs() {
             const file = ui.input.files[0];
             const filterKeyword = ui.filter.value.trim();
-            if (!file) return;
+
+            if (!file) {
+                updateStatus("Please select a .gz file first.", true);
+                return;
+            }
             
             ui.button.disabled = true;
             ui.button.textContent = "Processing...";
+            updateStatus(`Reading file and decompressing. Filtering scan logs for '${filterKeyword || 'all'}'...`);
+
             try {
                 const buffer = await readFileAsArrayBuffer(file);
                 const decompressed = pako.inflate(buffer);
                 const logContent = new TextDecoder('utf-8').decode(decompressed);
+                
+                updateStatus("Log file decompressed. Analyzing data...");
+
                 const stats = parseAndAnalyze(logContent, filterKeyword);
                 g_analysisStats = stats;
+
                 displayResults(stats);
-                updateStatus(`Analysis complete!`);
+
+                updateStatus(`Analysis complete! Processed ${stats.totalEntries} relevant scan entries and ${stats.exclusionData.length} unique exclusion timestamps.`);
             } catch (error) {
-                updateStatus(`An error occurred: ${error.message}`, true);
+                console.error("Analysis Error:", error);
+                updateStatus(`An error occurred during processing: ${error.message}`, true);
             } finally {
                 ui.button.disabled = false;
                 ui.button.textContent = "Start Analysis";
@@ -200,11 +216,17 @@
             });
         }
 
+        // --- Parsing & Analysis ---
         const LOG_REGEX = /^\[(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}\.\d{3})\].*?\[thread id:\s*(\d+)\][^']+'([^']+?)'/;
         const SCAN_KEYWORDS = ['BaseScan', 'LocalScanner'];
+
         const EXCLUSION_REGEX = /^\[(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}\.\d{3})\].*?\[Configuration\]\s+(Process|File and folder)\s+exclusions:\s*(?:\[(.*?)\]|(.+?))\s*$/gims;
+
+        // DNS Secure patterns:
         const DNS_SCANNED_REGEX = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\].*?\[DnsSecure\].*?Detected domain[:\s-]*([^\r\n]+)/gim;
         const DNS_GENERIC_REGEX = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\].*?\[NetProtection\].*?Blocked process[:\s-]*([^\r\n]+)/gim;
+        
+        // NetProtection detailed patterns:
         const NET_PROCESS_NOT_TRUSTED_REGEX = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\].*?\[NetProtection\].*?Process \[pid=(\d+)\] is not trusted, intercepting/gim;
         const NET_HTTP_INTERCEPTION_REGEX = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\].*?\[NetProtection\].*?TCP connection for \[pid=(\d+)\]: Starting HTTP interception/gim;
         const NET_HTTP2_INTERCEPTION_REGEX = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\].*?\[NetProtection\].*?TCP connection for \[pid=(\d+)\]: Starting HTTP2 interception/gim;
@@ -213,307 +235,1105 @@
 
         function extractFileInfo(filePath) {
             const normalizedPath = filePath.replace(/\\/g, '/');
-            const parts = normalizedPath.split('/').filter(p => p && p !== '?'); 
-            const pathParts = parts.slice(0, -1);
+            const parts = normalizedPath.split('/');
+            const filteredParts = parts.filter(p => p && p !== '?'); 
+            
+            const pathParts = filteredParts.slice(0, -1);
             const path = pathParts.join('/') + (pathParts.length > 0 ? '/' : '');
-            const fileName = parts[parts.length - 1] || '';
+            
+            const fileName = filteredParts[filteredParts.length - 1] || '';
+            
             const extensionMatch = fileName.match(/\.([^\.]+)$/);
-            return { path, extension: extensionMatch ? extensionMatch[1] : 'N/A' };
+            const extension = extensionMatch ? extensionMatch[1] : 'N/A';
+
+            return { path, extension };
         }
 
         function indexRawData(data) {
             const map = {
-                topPaths: new Map(), topFiles: new Map(), topThreadIds: new Map(), topExtensions: new Map(),
-                topFilesPerExtension: new Map(), topPathsPerExtension: new Map(), topThreadIdsPerPath: new Map(),
-                topScansPerFile: new Map(), topScansPerFilePerThreadId: new Map()
+                topPaths: new Map(),
+                topFiles: new Map(),
+                topThreadIds: new Map(),
+                topExtensions: new Map(),
+                topFilesPerExtension: new Map(),
+                topPathsPerExtension: new Map(),
+                topThreadIdsPerPath: new Map(),
+                topScansPerFile: new Map(),
+                topScansPerFilePerThreadId: new Map()
             };
+
             const keyFns = {
-                topPaths: i => i.path, topFiles: i => i.filePath, topThreadIds: i => i.threadId, topExtensions: i => i.extension,
-                topFilesPerExtension: i => `${i.extension} | ${i.filePath}`, topPathsPerExtension: i => `${i.extension} | ${i.path}`,
-                topThreadIdsPerPath: i => `${i.path} | ${i.threadId}`, topScansPerFile: i => i.filePath, topScansPerFilePerThreadId: i => `${i.filePath} | ${i.threadId}`
+                topPaths: item => item.path,
+                topFiles: item => item.filePath,
+                topThreadIds: item => item.threadId,
+                topExtensions: item => item.extension,
+                topFilesPerExtension: item => `${item.extension} | ${item.filePath}`,
+                topPathsPerExtension: item => `${item.extension} | ${item.path}`,
+                topThreadIdsPerPath: item => `${item.path} | ${item.threadId}`,
+                topScansPerFile: item => item.filePath,
+                topScansPerFilePerThreadId: item => `${item.filePath} | ${item.threadId}`
             };
+
             data.forEach(item => {
                 for (const [keyName, keyFn] of Object.entries(keyFns)) {
                     const key = keyFn(item);
-                    if (!map[keyName].has(key)) map[keyName].set(key, []);
+                    if (!map[keyName].has(key)) {
+                        map[keyName].set(key, []);
+                    }
                     map[keyName].get(key).push(item);
                 }
             });
+
             return map;
         }
 
         function parseAndAnalyze(logContent, filterKeyword) {
+            // --- 0. Extract exclusions ---
             const exclusionMap = new Map();
             let m;
             while ((m = EXCLUSION_REGEX.exec(logContent)) !== null) {
-                const ts = m[1], type = (m[2] || '').trim(), multiline = m[3], single = m[4];
-                let ex = [];
-                if (multiline && multiline.trim()) ex = multiline.split(/\r?\n/).map(l => l.replace(/^\s*[-•\*]\s*/, '').trim()).filter(Boolean);
-                else if (single && single.trim()) ex = [single.trim()];
-                if (!exclusionMap.has(ts)) exclusionMap.set(ts, { processes: [], files: [] });
-                const entry = exclusionMap.get(ts);
-                if (type.toLowerCase().includes('process')) ex.forEach(e => { if(!entry.processes.includes(e)) entry.processes.push(e); });
-                else ex.forEach(e => { if(!entry.files.includes(e)) entry.files.push(e); });
+                const timestamp = m[1];
+                const type = (m[2] || '').trim();
+                const multiline = m[3];
+                const single = m[4];
+
+                let exclusions = [];
+
+                if (multiline && multiline.trim()) {
+                    exclusions = multiline
+                        .split(/\r?\n/)
+                        .map(line => line.replace(/^\s*[-•\*]\s*/, '').trim())
+                        .map(line => line.replace(/\s+$/, ''))
+                        .filter(Boolean);
+                } else if (single && single.trim()) {
+                    exclusions = [single.trim()];
+                }
+
+                if (!exclusionMap.has(timestamp)) {
+                    exclusionMap.set(timestamp, { processes: [], files: [] });
+                }
+                const entry = exclusionMap.get(timestamp);
+
+                if (type.toLowerCase().includes('process')) {
+                    exclusions.forEach(e => {
+                        if (!entry.processes.includes(e)) entry.processes.push(e);
+                    });
+                } else {
+                    exclusions.forEach(e => {
+                        if (!entry.files.includes(e)) entry.files.push(e);
+                    });
+                }
             }
 
+            // --- DNS Secure & NetProtection extraction ---
             const dnsEntries = [];
-            const netProtectionEntries = { processNotTrusted: [], httpInterception: [], http2Interception: [], tlsHandshake: [], processConnection: [] };
+            const netProtectionEntries = {
+                processNotTrusted: [],
+                httpInterception: [],
+                http2Interception: [],
+                tlsHandshake: [],
+                processConnection: []
+            };
+            
             let d;
-            while ((d = DNS_SCANNED_REGEX.exec(logContent)) !== null) dnsEntries.push({ timestamp: d[1], category: 'DNS Detected', value: d[2].trim() });
-            while ((d = DNS_GENERIC_REGEX.exec(logContent)) !== null) dnsEntries.push({ timestamp: d[1], category: 'Blocked Process', value: d[2].trim() });
-            while ((d = NET_PROCESS_NOT_TRUSTED_REGEX.exec(logContent)) !== null) netProtectionEntries.processNotTrusted.push({ timestamp: d[1], pid: d[2] });
-            while ((d = NET_HTTP_INTERCEPTION_REGEX.exec(logContent)) !== null) netProtectionEntries.httpInterception.push({ timestamp: d[1], pid: d[2] });
-            while ((d = NET_HTTP2_INTERCEPTION_REGEX.exec(logContent)) !== null) netProtectionEntries.http2Interception.push({ timestamp: d[1], pid: d[2] });
-            while ((d = NET_TLS_HANDSHAKE_REGEX.exec(logContent)) !== null) netProtectionEntries.tlsHandshake.push({ timestamp: d[1], tcpconnid: d[2], domain: d[3], timeMs: d[4], returnValue: d[5] });
-            while ((d = NET_PROCESS_CONNECTION_REGEX.exec(logContent)) !== null) netProtectionEntries.processConnection.push({ timestamp: d[1], pid: d[2], path: d[3] });
+            
+            // DNS Scanned
+            while ((d = DNS_SCANNED_REGEX.exec(logContent)) !== null) {
+                const ts = d[1];
+                const value = (d[2] || '').trim();
+                dnsEntries.push({ timestamp: ts, category: 'DNS Detected', value });
+            }
+            
+            // DNS Generic (Blocked process)
+            while ((d = DNS_GENERIC_REGEX.exec(logContent)) !== null) {
+                const ts = d[1];
+                const value = (d[2] || '').trim();
+                dnsEntries.push({ timestamp: ts, category: 'Blocked Process', value });
+            }
+            
+            // Process Not Trusted
+            while ((d = NET_PROCESS_NOT_TRUSTED_REGEX.exec(logContent)) !== null) {
+                netProtectionEntries.processNotTrusted.push({
+                    timestamp: d[1],
+                    pid: d[2]
+                });
+            }
+            
+            // HTTP Interception
+            while ((d = NET_HTTP_INTERCEPTION_REGEX.exec(logContent)) !== null) {
+                netProtectionEntries.httpInterception.push({
+                    timestamp: d[1],
+                    pid: d[2]
+                });
+            }
+            
+            // HTTP2 Interception
+            while ((d = NET_HTTP2_INTERCEPTION_REGEX.exec(logContent)) !== null) {
+                netProtectionEntries.http2Interception.push({
+                    timestamp: d[1],
+                    pid: d[2]
+                });
+            }
+            
+            // TLS Handshake
+            while ((d = NET_TLS_HANDSHAKE_REGEX.exec(logContent)) !== null) {
+                netProtectionEntries.tlsHandshake.push({
+                    timestamp: d[1],
+                    tcpconnid: d[2],
+                    domain: d[3],
+                    timeMs: d[4],
+                    returnValue: d[5]
+                });
+            }
+            
+            // Process Connection
+            while ((d = NET_PROCESS_CONNECTION_REGEX.exec(logContent)) !== null) {
+                netProtectionEntries.processConnection.push({
+                    timestamp: d[1],
+                    pid: d[2],
+                    path: d[3]
+                });
+            }
 
+            // --- 1. Process scan lines ---
             const lines = logContent.split(/\r?\n/);
             const scanData = [];
             const normalizedFilter = (filterKeyword || '').toLowerCase();
+            const filterEnabled = normalizedFilter.length > 0;
+
             for (const line of lines) {
-                if (SCAN_KEYWORDS.every(k => line.includes(k))) {
+                if (SCAN_KEYWORDS.every(keyword => line.includes(keyword))) {
                     const match = line.match(LOG_REGEX);
                     if (match) {
+                        const timestamp = match[1].trim();
+                        const threadId = match[2].trim();
                         const filePath = match[3].trim();
-                        if (normalizedFilter && !filePath.toLowerCase().includes(normalizedFilter)) continue;
+
+                        const normalizedFilePath = filePath.toLowerCase().replace(/\\/g, '/');
+                        if (filterEnabled && !normalizedFilePath.includes(normalizedFilter)) {
+                            continue;
+                        }
+
+                        const scanTime = 1;
                         const { path, extension } = extractFileInfo(filePath);
-                        scanData.push({ filePath, scanTime: 1, threadId: match[2].trim(), path, extension, timestamp: match[1].trim() });
+
+                        scanData.push({ filePath, scanTime, threadId, path, extension, timestamp });
                     }
                 }
             }
 
-            let aggregatedExclusions = Array.from(exclusionMap.entries()).map(([ts, data]) => ({
-                timestamp: ts, processExclusions: [...new Set(data.processes)], fileFolderExclusions: [...new Set(data.files)]
-            })).filter(i => i.processExclusions.length > 0 || i.fileFolderExclusions.length > 0).sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
+            // --- 2. Finalize exclusions ---
+            let aggregatedExclusions = Array.from(exclusionMap.entries()).map(([timestamp, data]) => ({
+                timestamp,
+                processExclusions: data.processes.filter((v, i, a) => a.indexOf(v) === i),
+                fileFolderExclusions: data.files.filter((v, i, a) => a.indexOf(v) === i)
+            }));
+
+            aggregatedExclusions = aggregatedExclusions.filter(item =>
+                (item.processExclusions && item.processExclusions.length > 0) ||
+                (item.fileFolderExclusions && item.fileFolderExclusions.length > 0)
+            );
+
+            aggregatedExclusions.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
             const rawDataIndex = indexRawData(scanData);
+
+            // Aggregate NetProtection stats
             const aggregatePidCounts = (arr) => {
                 const counts = new Map();
-                arr.forEach(i => counts.set(i.pid, (counts.get(i.pid) || 0) + 1));
-                return Array.from(counts.entries()).map(([pid, count]) => ({ pid, count })).sort((a,b) => b.count - a.count);
+                arr.forEach(item => {
+                    const pid = item.pid;
+                    counts.set(pid, (counts.get(pid) || 0) + 1);
+                });
+                return Array.from(counts.entries())
+                    .map(([pid, count]) => ({ pid, count }))
+                    .sort((a, b) => b.count - a.count);
             };
 
-            const aggregateTls = (arr) => {
-                const dom = new Map(), ret = new Map();
-                arr.forEach(i => { dom.set(i.domain, (dom.get(i.domain)||0)+1); ret.set(i.returnValue, (ret.get(i.returnValue)||0)+1); });
-                return { byDomain: Array.from(dom.entries()).map(([domain, count]) => ({ domain, count })).sort((a,b)=>b.count-a.count), byReturnValue: Array.from(ret.entries()).map(([returnValue, count]) => ({ returnValue, count })).sort((a,b)=>b.count-a.count), allEntries: arr };
+            const aggregateTlsHandshake = (arr) => {
+                const domainCounts = new Map();
+                const returnCounts = new Map();
+                arr.forEach(item => {
+                    const domain = item.domain;
+                    const ret = item.returnValue;
+                    domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
+                    returnCounts.set(ret, (returnCounts.get(ret) || 0) + 1);
+                });
+                return {
+                    byDomain: Array.from(domainCounts.entries())
+                        .map(([domain, count]) => ({ domain, count }))
+                        .sort((a, b) => b.count - a.count),
+                    byReturnValue: Array.from(returnCounts.entries())
+                        .map(([returnValue, count]) => ({ returnValue, count }))
+                        .sort((a, b) => b.count - a.count),
+                    allEntries: arr
+                };
             };
 
-            const aggregateConn = (arr) => {
-                const pathC = new Map(), pidC = new Map();
-                arr.forEach(i => { pathC.set(i.path, (pathC.get(i.path)||0)+1); pidC.set(i.pid, (pidC.get(i.pid)||0)+1); });
-                return { byPath: Array.from(pathC.entries()).map(([path, count]) => ({ path, count })).sort((a,b)=>b.count-a.count), byPid: Array.from(pidC.entries()).map(([pid, count]) => ({ pid, count })), allEntries: arr };
+            const aggregateProcessConnection = (arr) => {
+                const pathCounts = new Map();
+                const pidCounts = new Map();
+                arr.forEach(item => {
+                    const path = item.path;
+                    const pid = item.pid;
+                    pathCounts.set(path, (pathCounts.get(path) || 0) + 1);
+                    pidCounts.set(pid, (pidCounts.get(pid) || 0) + 1);
+                });
+                return {
+                    byPath: Array.from(pathCounts.entries())
+                        .map(([path, count]) => ({ path, count }))
+                        .sort((a, b) => b.count - a.count),
+                    byPid: Array.from(pidCounts.entries())
+                        .map(([pid, count]) => ({ pid, count }))
+                        .sort((a, b) => b.count - a.count),
+                    allEntries: arr
+                };
             };
 
-            return {
-                totalEntries: scanData.length, exclusionData: aggregatedExclusions, rawDataIndex, dnsSecure: dnsEntries,
-                netProtection: { processNotTrusted: aggregatePidCounts(netProtectionEntries.processNotTrusted), httpInterception: aggregatePidCounts(netProtectionEntries.httpInterception), http2Interception: aggregatePidCounts(netProtectionEntries.http2Interception), tlsHandshake: aggregateTls(netProtectionEntries.tlsHandshake), processConnection: aggregateConn(netProtectionEntries.processConnection), raw: netProtectionEntries },
-                topPaths: aggregateStats(scanData, i => i.path), topFiles: aggregateStats(scanData, i => i.filePath), topThreadIds: aggregateStats(scanData, i => i.threadId), topExtensions: aggregateStats(scanData, i => i.extension), topFilesPerExtension: aggregateStats(scanData, i => `${i.extension} | ${i.filePath}`), topPathsPerExtension: aggregateStats(scanData, i => `${i.extension} | ${i.path}`), topThreadIdsPerPath: aggregateStats(scanData, i => `${i.path} | ${i.threadId}`), topScansPerFile: aggregateStats(scanData, i => i.filePath), topScansPerFilePerThreadId: aggregateStats(scanData, i => `${i.filePath} | ${i.threadId}`)
+            const stats = {
+                totalEntries: scanData.length,
+                exclusionData: aggregatedExclusions,
+                rawDataIndex: rawDataIndex,
+                dnsSecure: dnsEntries,
+                netProtection: {
+                    processNotTrusted: aggregatePidCounts(netProtectionEntries.processNotTrusted),
+                    httpInterception: aggregatePidCounts(netProtectionEntries.httpInterception),
+                    http2Interception: aggregatePidCounts(netProtectionEntries.http2Interception),
+                    tlsHandshake: aggregateTlsHandshake(netProtectionEntries.tlsHandshake),
+                    processConnection: aggregateProcessConnection(netProtectionEntries.processConnection),
+                    raw: netProtectionEntries
+                },
+                topPaths: aggregateStats(scanData, item => item.path),
+                topFiles: aggregateStats(scanData, item => item.filePath),
+                topThreadIds: aggregateStats(scanData, item => item.threadId),
+                topExtensions: aggregateStats(scanData, item => item.extension),
+                topFilesPerExtension: aggregateStats(scanData, item => `${item.extension} | ${item.filePath}`),
+                topPathsPerExtension: aggregateStats(scanData, item => `${item.extension} | ${item.path}`),
+                topThreadIdsPerPath: aggregateStats(scanData, item => `${item.path} | ${item.threadId}`),
+                topScansPerFile: aggregateStats(scanData, item => item.filePath),
+                topScansPerFilePerThreadId: aggregateStats(scanData, item => `${item.filePath} | ${item.threadId}`)
             };
+
+            return stats;
         }
 
         function aggregateStats(data, keyFn) {
             const map = new Map();
             for (const item of data) {
                 const key = keyFn(item);
-                const current = map.get(key) || { count: 0 };
+                const current = map.get(key) || { totalTime: 0, count: 0 };
                 current.count += 1;
                 map.set(key, current);
             }
-            return Array.from(map.entries()).map(([key, v]) => ({ key, ...v })).sort((a, b) => b.count - a.count);
+            const sortedResults = Array.from(map.entries())
+                .map(([key, value]) => ({ key, ...value }))
+                .sort((a, b) => b.count - a.count)
+                .map(item => ({ ...item, displayTime: `${item.count} scans` }));
+            return sortedResults; // Return all, slicing happens later
         }
 
-        function escapeKeyForHtml(key) { return key.replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
-        function escapeHtml(s) { if (!s && s !== '') return ''; return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
-        function limitString(s, limit = 100) { return s.length > limit ? s.substring(0, limit) + '...' : s; }
+        // --- Display helpers, safe escaping ---
+        function escapeKeyForHtml(key) {
+            return key.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        }
+        function escapeHtml(s) {
+            if (!s && s !== '') return '';
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+        function limitString(s, limit = 100) {
+            return s.length > limit ? s.substring(0, limit) + '...' : s;
+        }
 
+        // --- Exclusions rendering (rows will be paginated) ---
+        const EXCLUSION_DISPLAY_LIMIT = 5;
         function renderExclusionList(exclusions, isProcess) {
-            if (!exclusions || exclusions.length === 0) return `<span class="italic text-gray-400">None logged</span>`;
+            if (!exclusions || exclusions.length === 0) {
+                return `<span class="italic text-gray-400">None logged at this time</span>`;
+            }
+
             const listClass = isProcess ? 'text-red-700' : 'text-gray-900';
             const uniqueId = `list-${Math.random().toString(36).substring(2, 9)}`;
-            if (exclusions.length <= 5) return `<ul class="list-disc list-inside space-y-1">${exclusions.map(e => `<li class="break-all ${listClass}">${escapeHtml(e)}</li>`).join('')}</ul>`;
-            const visible = exclusions.slice(0, 5), hiddenCount = exclusions.length - 5;
-            return `<div id="${uniqueId}"><ul class="list-disc list-inside space-y-1 mb-2">${visible.map(e => `<li class="break-all ${listClass}">${escapeHtml(e)}</li>`).join('')}</ul><div id="hidden-${uniqueId}" class="hidden"><ul class="list-disc list-inside space-y-1 mb-2">${exclusions.slice(5).map(e => `<li class="break-all ${listClass}">${escapeHtml(e)}</li>`).join('')}</ul></div><button onclick="toggleExclusionList('${uniqueId}', this, ${hiddenCount})" class="text-blue-600 hover:text-blue-800 text-xs font-semibold underline">+ Show ${hiddenCount} more</button></div>`;
+
+            if (exclusions.length <= EXCLUSION_DISPLAY_LIMIT) {
+                const listItems = exclusions.map(e => `<li class="break-all ${listClass}">${escapeHtml(e)}</li>`).join('');
+                return `<ul class="list-disc list-inside space-y-1">${listItems}</ul>`;
+            }
+
+            const visibleItems = exclusions.slice(0, EXCLUSION_DISPLAY_LIMIT);
+            const hiddenItemsCount = exclusions.length - EXCLUSION_DISPLAY_LIMIT;
+            const visibleList = visibleItems.map(e => `<li class="break-all ${listClass}">${escapeHtml(e)}</li>`).join('');
+            const hiddenListContent = exclusions.slice(EXCLUSION_DISPLAY_LIMIT).map(e => `<li class="break-all ${listClass}">${escapeHtml(e)}</li>`).join('');
+
+            const content = `
+                <div id="${uniqueId}">
+                    <ul class="list-disc list-inside space-y-1 mb-2">${visibleList}</ul>
+                    <div id="hidden-${uniqueId}" class="hidden">
+                        <ul class="list-disc list-inside space-y-1 mb-2">${hiddenListContent}</ul>
+                    </div>
+                    <button 
+                        onclick="toggleExclusionList('${uniqueId}', this, ${hiddenItemsCount})" 
+                        class="text-blue-600 hover:text-blue-800 text-xs font-semibold underline"
+                    >
+                        + Show ${hiddenItemsCount} more
+                    </button>
+                </div>
+            `;
+            return content;
         }
-        function toggleExclusionList(id, btn, count) {
-            const h = document.getElementById(`hidden-${id}`);
-            if (h.classList.contains('hidden')) { h.classList.remove('hidden'); btn.textContent = '- Hide'; }
-            else { h.classList.add('hidden'); btn.textContent = `+ Show ${count} more`; }
+        function toggleExclusionList(id, button, initialCount) {
+            const hiddenDiv = document.getElementById(`hidden-${id}`);
+            if (hiddenDiv.classList.contains('hidden')) {
+                hiddenDiv.classList.remove('hidden');
+                button.textContent = '- Hide extra exclusions';
+            } else {
+                hiddenDiv.classList.add('hidden');
+                button.textContent = `+ Show ${initialCount} more`;
+            }
         }
         window.toggleExclusionList = toggleExclusionList;
 
+        // --- Generic paginated table rendering ---
         const PAGINATORS = {};
+
         function renderPaginatedTable(opts) {
-            const {id, title, columnsHtml, rowsArray, defaultPageSize, breakdownFn} = opts;
-            PAGINATORS[id] = { data: rowsArray, pageSize: defaultPageSize || 25, currentPage: 1, breakdownFn, id };
-            const html = `<div class="bg-gray-50 p-4 rounded-xl shadow-inner mb-3"><h3 class="text-xl font-bold text-gray-700 mb-4 border-b pb-2">${escapeHtml(title)}</h3>${rowsArray.length === 0 ? `<p class="text-center text-gray-500 py-4">No data found.</p>` : `<div class="table-wrap"><table class="min-w-full divide-y divide-gray-200" id="${id}-table"><thead class="bg-gray-200"><tr>${columnsHtml}</tr></thead><tbody id="${id}-tbody" class="bg-white divide-y divide-gray-100"></tbody></table></div><div class="flex items-center justify-between mt-3"><div class="flex items-center gap-2"><span class="text-sm text-gray-600">Rows:</span><button class="pg-btn" onclick="changePageSize('${id}', 10)">10</button><button class="pg-btn active" onclick="changePageSize('${id}', 25)">25</button></div><div class="pg-nav"><span id="${id}-info" class="text-sm text-gray-600"></span><button class="pg-btn" id="${id}-prev" onclick="changePage('${id}', -1)" disabled>Prev</button><button class="pg-btn" id="${id}-next" onclick="changePage('${id}', 1)" disabled>Next</button></div></div>`}</div>`;
+            const id = opts.id;
+            const title = opts.title || '';
+            const columnsHtml = opts.columnsHtml;
+            const rowsArray = opts.rowsArray || [];
+            const defaultSize = opts.defaultPageSize || 25;
+            const breakdownFn = opts.breakdownFn || null; // Function to call on row click
+
+            PAGINATORS[id] = {
+                data: rowsArray,
+                pageSize: defaultSize,
+                currentPage: 1,
+                breakdownFn: breakdownFn,
+                id: id
+            };
+            
+            // Build the initial HTML structure
+            const html = `
+                <div class="bg-gray-50 p-4 rounded-xl shadow-inner mb-3">
+                    <h3 class="text-xl font-bold text-gray-700 mb-4 border-b pb-2">${escapeHtml(title)}</h3>
+                    ${rowsArray.length === 0 ? 
+                        `<p class="text-center text-gray-500 py-4">No data found for this category.</p>` : 
+                        `
+                        <div class="table-wrap">
+                            <table class="min-w-full divide-y divide-gray-200" id="${id}-table">
+                                <thead class="bg-gray-200">
+                                    <tr>${columnsHtml}</tr>
+                                </thead>
+                                <tbody id="${id}-tbody" class="bg-white divide-y divide-gray-100"></tbody>
+                            </table>
+                        </div>
+
+                        <div class="flex items-center justify-between mt-3">
+                            <div class="flex items-center gap-2">
+                                <span class="text-sm text-gray-600">Rows:</span>
+                                <button class="pg-btn ${defaultSize===10 ? 'active' : ''}" onclick="changePageSize('${id}', 10)">10</button>
+                                <button class="pg-btn ${defaultSize===25 ? 'active' : ''}" onclick="changePageSize('${id}', 25)">25</button>
+                                <button class="pg-btn ${defaultSize===50 ? 'active' : ''}" onclick="changePageSize('${id}', 50)">50</button>
+                            </div>
+                            <div class="pg-nav">
+                                <span id="${id}-info" class="text-sm text-gray-600"></span>
+                                <button class="pg-btn" id="${id}-prev" onclick="changePage('${id}', -1)" disabled>Prev</button>
+                                <button class="pg-btn" id="${id}-next" onclick="changePage('${id}', 1)" disabled>Next</button>
+                            </div>
+                        </div>
+                        `
+                    }
+                </div>
+            `;
+            
+            // Render the initial content
             const container = document.createElement('div');
             container.innerHTML = html;
-            if (rowsArray.length > 0) setTimeout(() => renderTablePage(id, 1), 0);
+            
+            // If there's data, render the first page
+            if (rowsArray.length > 0) {
+                setTimeout(() => renderTablePage(id, 1), 0); // Defer for DOM to update
+            }
+
             return container.innerHTML;
         }
         
         function renderTablePage(id, page) {
-            const s = PAGINATORS[id]; if (!s) return;
-            s.currentPage = page;
-            const tbody = document.getElementById(`${id}-tbody`), info = document.getElementById(`${id}-info`), prev = document.getElementById(`${id}-prev`), next = document.getElementById(`${id}-next`);
-            const start = (s.currentPage - 1) * s.pageSize, end = start + s.pageSize, data = s.data.slice(start, end), total = s.data.length, pages = Math.ceil(total / s.pageSize);
-            tbody.innerHTML = data.map(row => {
-                const onClick = s.breakdownFn ? `onclick="showBreakdown('${s.breakdownFn}', '${escapeKeyForHtml(row.key)}')"` : '';
-                return `<tr class="${s.breakdownFn ? 'hover:bg-blue-50 cursor-pointer' : ''} transition duration-100" ${onClick}>${row.columns.map(col => `<td class="p-3 text-sm text-gray-700 break-words">${col}</td>`).join('')}</tr>`;
-            }).join('');
-            info.textContent = `Showing ${Math.min(total, start + 1)}-${Math.min(total, end)} of ${total}`;
-            prev.disabled = s.currentPage === 1; next.disabled = s.currentPage === pages || total === 0;
+            const state = PAGINATORS[id];
+            if (!state) return;
+
+            state.currentPage = page;
+
+            const tbody = document.getElementById(`${id}-tbody`);
+            const info = document.getElementById(`${id}-info`);
+            const prevBtn = document.getElementById(`${id}-prev`);
+            const nextBtn = document.getElementById(`${id}-next`);
+
+            const start = (state.currentPage - 1) * state.pageSize;
+            const end = start + state.pageSize;
+            const paginatedData = state.data.slice(start, end);
+            const totalPages = Math.ceil(state.data.length / state.pageSize);
+            const totalRows = state.data.length;
+
+            let html = '';
+            paginatedData.forEach(row => {
+                let rowHtml = row.columns.map(col => `<td class="p-3 text-sm text-gray-700 break-words">${col}</td>`).join('');
+                
+                let rowClass = 'hover:bg-blue-50';
+                let onClick = '';
+                if (state.breakdownFn) {
+                    rowClass += ' cursor-pointer';
+                    // The data-key is the unique identifier for fetching raw logs
+                    const key = escapeKeyForHtml(row.key);
+                    onClick = `onclick="showBreakdown('${state.breakdownFn}', '${key}')"`;
+                }
+
+                html += `<tr class="${rowClass} transition duration-100" ${onClick}>${rowHtml}</tr>`;
+            });
+            tbody.innerHTML = html;
+
+            // Update info and buttons
+            const startDisplay = Math.min(totalRows, start + 1);
+            const endDisplay = Math.min(totalRows, end);
+            info.textContent = `Showing ${startDisplay}-${endDisplay} of ${totalRows}`;
+            
+            prevBtn.disabled = state.currentPage === 1;
+            nextBtn.disabled = state.currentPage === totalPages || totalRows === 0;
+
+            // Update page size buttons' active state
+            document.querySelectorAll(`button[data-table="${id}"]`).forEach(btn => {
+                btn.classList.toggle('active', parseInt(btn.dataset.size) === state.pageSize);
+            });
         }
 
         function changePage(id, delta) {
-            const s = PAGINATORS[id];
-            const newPage = s.currentPage + delta;
-            if (newPage >= 1 && newPage <= Math.ceil(s.data.length / s.pageSize)) renderTablePage(id, newPage);
-        }
-
-        function changePageSize(id, size) {
-            const s = PAGINATORS[id];
-            s.pageSize = size;
-            renderTablePage(id, 1);
-        }
-        window.changePage = changePage; window.changePageSize = changePageSize;
-
-        function showBreakdown(type, key) {
-            const titleEl = document.getElementById('breakdownTitle'), contentEl = document.getElementById('breakdownContent');
-            const stats = g_analysisStats;
-            let data = [], displayTitle = '';
-            const map = { topFiles: 'topFiles', topPaths: 'topPaths', topExtensions: 'topExtensions', topThreadIds: 'topThreadIds', topFilesPerExtension: 'topFilesPerExtension', topPathsPerExtension: 'topPathsPerExtension', topThreadIdsPerPath: 'topThreadIdsPerPath', topScansPerFile: 'topScansPerFile', topScansPerFilePerThreadId: 'topScansPerFilePerThreadId' };
-            const indexKey = map[type];
-            if (indexKey) {
-                data = stats.rawDataIndex[indexKey].get(key) || [];
-                displayTitle = `Raw Scan Entries: <span class="font-normal text-gray-600 break-all">${escapeHtml(key)}</span>`;
-                contentEl.innerHTML = data.map(i => `<div class="p-3 bg-gray-100 rounded-lg shadow-sm"><p class="font-semibold text-sm text-blue-700">${escapeHtml(i.timestamp)}</p><p class="text-xs text-gray-500">Thread ID: ${escapeHtml(i.threadId)}</p><p class="text-sm text-gray-800 break-all">${escapeHtml(i.filePath)}</p></div>`).join('') || '<p>None</p>';
-            } else if (type === 'netProcessConnection') {
-                data = stats.netProtection.raw.processConnection.filter(i => i.path === key);
-                displayTitle = `Connections: ${escapeHtml(key)}`;
-                contentEl.innerHTML = data.map(i => `<div class="p-3 bg-gray-100 rounded-lg shadow-sm"><p class="font-semibold text-sm text-blue-700">${escapeHtml(i.timestamp)}</p><p class="text-xs text-gray-500">PID: ${escapeHtml(i.pid)}</p></div>`).join('');
-            } else if (type === 'netTlsHandshake') {
-                data = stats.netProtection.raw.tlsHandshake.filter(i => i.domain === key);
-                displayTitle = `TLS: ${escapeHtml(key)}`;
-                contentEl.innerHTML = data.map(i => `<div class="p-3 bg-gray-100 rounded-lg shadow-sm"><p class="font-semibold text-sm text-blue-700">${escapeHtml(i.timestamp)}</p><p class="text-xs text-gray-500">Return: ${escapeHtml(i.returnValue)} | ${i.timeMs}ms</p></div>`).join('');
+            const state = PAGINATORS[id];
+            const totalPages = Math.ceil(state.data.length / state.pageSize);
+            const newPage = state.currentPage + delta;
+            
+            if (newPage >= 1 && newPage <= totalPages) {
+                renderTablePage(id, newPage);
             }
-            titleEl.innerHTML = displayTitle; ui.modal.classList.remove('hidden');
         }
-        function hideBreakdown() { ui.modal.classList.add('hidden'); }
-        window.showBreakdown = showBreakdown; window.hideBreakdown = hideBreakdown;
 
-        function openTab(name) {
-            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            document.getElementById(name).classList.add('active');
-            document.querySelector(`.tab-btn[onclick="openTab('${name}')"]`).classList.add('active');
+        function changePageSize(id, newSize) {
+            const state = PAGINATORS[id];
+            if (state.pageSize !== newSize) {
+                state.pageSize = newSize;
+                // Re-render from the first page
+                renderTablePage(id, 1);
+                
+                // Update button active state
+                const buttons = document.querySelectorAll(`[onclick^="changePageSize('${id}'"]`);
+                buttons.forEach(btn => btn.classList.remove('active'));
+                document.querySelector(`[onclick="changePageSize('${id}', ${newSize})"]`).classList.add('active');
+            }
+        }
+        
+        window.changePage = changePage;
+        window.changePageSize = changePageSize;
+
+
+        // --- Breakdown Modal Logic ---
+        function showBreakdown(breakdownType, key) {
+            const titleEl = document.getElementById('breakdownTitle');
+            const contentEl = document.getElementById('breakdownContent');
+            const stats = g_analysisStats;
+
+            let data = [];
+            let displayTitle = '';
+
+            // Map breakdownType to the correct rawDataIndex key
+            const rawIndexKeyMap = {
+                topFiles: 'topFiles',
+                topPaths: 'topPaths',
+                topExtensions: 'topExtensions',
+                topThreadIds: 'topThreadIds',
+                topFilesPerExtension: 'topFilesPerExtension',
+                topPathsPerExtension: 'topPathsPerExtension',
+                topThreadIdsPerPath: 'topThreadIdsPerPath',
+                topScansPerFile: 'topScansPerFile',
+                topScansPerFilePerThreadId: 'topScansPerFilePerThreadId'
+            };
+
+            const indexKey = rawIndexKeyMap[breakdownType];
+
+            if (indexKey) {
+                // Scan Log Breakdown
+                data = stats.rawDataIndex[indexKey].get(key) || [];
+                displayTitle = `Raw Scan Entries for: <span class="font-normal text-gray-600 break-all">${escapeHtml(key)}</span>`;
+
+                if (data.length > 0) {
+                    const listHtml = data.map(item => `
+                        <div class="p-3 bg-gray-100 rounded-lg shadow-sm">
+                            <p class="font-semibold text-sm text-blue-700">${escapeHtml(item.timestamp)}</p>
+                            <p class="text-xs text-gray-500">Thread ID: ${escapeHtml(item.threadId)}</p>
+                            <p class="text-sm text-gray-800 break-all">${escapeHtml(item.filePath)}</p>
+                        </div>
+                    `).join('');
+                    contentEl.innerHTML = listHtml;
+                } else {
+                    contentEl.innerHTML = `<p class="text-center text-gray-500 py-4">No raw log entries found for this key.</p>`;
+                }
+            } else if (breakdownType === 'netProcessConnection') {
+                // NetProtection Process Connection Breakdown (path breakdown)
+                data = stats.netProtection.raw.processConnection.filter(item => item.path === key);
+                displayTitle = `Process Connection Details for Path: <span class="font-normal text-gray-600 break-all">${escapeHtml(key)}</span>`;
+
+                if (data.length > 0) {
+                     const listHtml = data.map(item => `
+                        <div class="p-3 bg-gray-100 rounded-lg shadow-sm">
+                            <p class="font-semibold text-sm text-blue-700">${escapeHtml(item.timestamp)}</p>
+                            <p class="text-xs text-gray-500">PID: ${escapeHtml(item.pid)}</p>
+                            <p class="text-sm text-gray-800 break-all">${escapeHtml(item.path)} is initiating a connection.</p>
+                        </div>
+                    `).join('');
+                    contentEl.innerHTML = listHtml;
+                } else {
+                    contentEl.innerHTML = `<p class="text-center text-gray-500 py-4">No raw log entries found for this key.</p>`;
+                }
+            } else if (breakdownType === 'netTlsHandshake') {
+                // NetProtection TLS Handshake Breakdown (domain breakdown)
+                data = stats.netProtection.raw.tlsHandshake.filter(item => item.domain === key);
+                displayTitle = `TLS Handshake Details for Domain: <span class="font-normal text-gray-600 break-all">${escapeHtml(key)}</span>`;
+
+                if (data.length > 0) {
+                     const listHtml = data.map(item => `
+                        <div class="p-3 bg-gray-100 rounded-lg shadow-sm">
+                            <p class="font-semibold text-sm text-blue-700">${escapeHtml(item.timestamp)}</p>
+                            <p class="text-xs text-gray-500">Conn ID: ${escapeHtml(item.tcpconnid)} | Return: ${escapeHtml(item.returnValue)} | Time: ${escapeHtml(item.timeMs)}ms</p>
+                            <p class="text-sm text-gray-800 break-all">Domain: ${escapeHtml(item.domain)}</p>
+                        </div>
+                    `).join('');
+                    contentEl.innerHTML = listHtml;
+                } else {
+                    contentEl.innerHTML = `<p class="text-center text-gray-500 py-4">No raw log entries found for this key.</p>`;
+                }
+            }
+            
+            titleEl.innerHTML = displayTitle;
+            ui.modal.classList.remove('hidden');
+        }
+
+        function hideBreakdown() {
+            ui.modal.classList.add('hidden');
+        }
+
+        function handleModalClick(event) {
+            // Close modal only if background is clicked
+            if (event.target.id === 'breakdownModal') {
+                hideBreakdown();
+            }
+        }
+        window.showBreakdown = showBreakdown;
+        window.hideBreakdown = hideBreakdown;
+        window.handleModalClick = handleModalClick;
+
+
+        // --- Tab Control ---
+        function openTab(tabName) {
+            document.querySelectorAll('.tab-panel').forEach(panel => {
+                panel.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            document.getElementById(tabName).classList.add('active');
+            document.querySelector(`.tab-btn[onclick="openTab('${tabName}')"]`).classList.add('active');
         }
         window.openTab = openTab;
 
+        // --- Main Results Renderer ---
         function displayResults(stats) {
+            // Check if any scan data was found
             if (stats.totalEntries === 0) {
-                ui.results.innerHTML = `<div class="text-center p-12 border-2 border-red-300 border-dashed rounded-lg bg-red-50"><h3 class="text-2xl font-bold text-red-700 mb-2">No Entries Found</h3></div>`;
+                ui.results.innerHTML = `
+                    <div class="text-center p-12 border-2 border-red-300 border-dashed rounded-lg bg-red-50">
+                        <h3 class="text-2xl font-bold text-red-700 mb-2">No Scan Log Entries Found</h3>
+                        <p class="text-red-600">The log file was processed, but no matching 'BaseScan' or 'LocalScanner' entries were found.</p>
+                        ${ui.filter.value.trim() ? `<p class="mt-2 text-sm text-red-500">Filter keyword '${escapeHtml(ui.filter.value)}' might be too restrictive.</p>` : ''}
+                    </div>
+                `;
                 return;
             }
-            ui.results.innerHTML = `<div class="tabs"><button class="tab-btn active" onclick="openTab('scan-stats-panel')">Scan Stats</button><button class="tab-btn" onclick="openTab('exclusions-panel')">Exclusions (${stats.exclusionData.length})</button><button class="tab-btn" onclick="openTab('dns-netprot-panel')">DNS/NetProtection</button><button class="tab-btn" onclick="openTab('agent-tab')">Agent Log Analyzer</button></div><div id="scan-stats-panel" class="tab-panel active space-y-8"></div><div id="exclusions-panel" class="tab-panel space-y-8"></div><div id="dns-netprot-panel" class="tab-panel space-y-8"></div><div id="agent-tab" class="tab-panel space-y-6"></div>`;
 
+            let resultsHtml = '';
+
+            // 1. Tabs structure
+            resultsHtml += `
+                <div class="tabs">
+                    <button class="tab-btn active" onclick="openTab('scan-stats-panel')">Scan Stats</button>
+                    <button class="tab-btn" onclick="openTab('exclusions-panel')">Exclusions (${stats.exclusionData.length})</button>
+                    <button class="tab-btn" onclick="openTab('dns-netprot-panel')">DNS/NetProtection</button>
+                    <button class="tab-btn" onclick="openTab('agent-tab')">Agent Log Analyzer</button>
+                </div>
+                <div id="scan-stats-panel" class="tab-panel active space-y-8"></div>
+                <div id="exclusions-panel" class="tab-panel space-y-8"></div>
+                <div id="dns-netprot-panel" class="tab-panel space-y-8"></div>
+                <div id="agent-tab" class="tab-panel space-y-6"></div>
+            `;
+            ui.results.innerHTML = resultsHtml;
+
+            // --- 2. Scan Stats Panel ---
             const scanStatsPanel = document.getElementById('scan-stats-panel');
-            let scanHtml = `<div class="p-4 bg-yellow-50 rounded-lg border border-yellow-200"><p class="text-lg font-bold text-yellow-700">Total Scans: ${stats.totalEntries.toLocaleString()}</p></div>`;
-            const renderTop = (id, title, data, kh, vh, bdt) => renderPaginatedTable({ id, title, columnsHtml: `<th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase w-3/4">${kh}</th><th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase w-1/4">${vh}</th>`, rowsArray: data.slice(0, 10).map(i => ({ key: i.key, columns: [escapeHtml(limitString(i.key, 70)), `<span class="font-mono">${i.count.toLocaleString()}</span>`] })), defaultPageSize: 10, breakdownFn: bdt });
-            scanHtml += `<div class="grid grid-cols-1 lg:grid-cols-2 gap-8"><div>${renderTop('topPaths', 'Top Paths', stats.topPaths, 'Path', 'Scans', 'topPaths')}${renderTop('topFiles', 'Top Files', stats.topFiles, 'File', 'Scans', 'topFiles')}</div><div>${renderTop('topThreadIds', 'Top Threads', stats.topThreadIds, 'Thread', 'Scans', 'topThreadIds')}${renderTop('topExtensions', 'Top Extensions', stats.topExtensions, 'Ext', 'Scans', 'topExtensions')}</div></div>`;
-            scanStatsPanel.innerHTML = scanHtml;
+            let scanStatsHtml = `
+                <div class="p-4 bg-yellow-50 rounded-lg border border-yellow-200">
+                    <p class="text-lg font-bold text-yellow-700">Total Scan Entries Analyzed: ${stats.totalEntries.toLocaleString()}</p>
+                    ${ui.filter.value.trim() ? `<p class="text-sm text-yellow-600">Scan logs were filtered by keyword: <strong>${escapeHtml(ui.filter.value)}</strong></p>` : ''}
+                </div>
+            `;
+            
+            // Function to render a single top-N table
+            const renderTopTable = (id, title, data, keyHeader, valHeader, breakdownType) => {
+                const top10Data = data.slice(0, 10);
+                const rows = top10Data.map(item => ({
+                    key: item.key,
+                    columns: [
+                        escapeHtml(limitString(item.key, 70)),
+                        `<span class="font-mono text-gray-800">${item.count.toLocaleString()}</span>`
+                    ]
+                }));
+                const columns = `
+                    <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider sticky-header w-3/4">${escapeHtml(keyHeader)}</th>
+                    <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider sticky-header w-1/4">${escapeHtml(valHeader)}</th>
+                `;
+                return renderPaginatedTable({ 
+                    id: id, 
+                    title: `${title} (Top ${Math.min(10, data.length)} / ${data.length.toLocaleString()})`, 
+                    columnsHtml: columns, 
+                    rowsArray: rows, 
+                    defaultPageSize: 10,
+                    breakdownFn: breakdownType 
+                });
+            };
 
-            const exclusionPanel = document.getElementById('exclusions-panel');
-            exclusionPanel.innerHTML = renderPaginatedTable({ id: 'excl-table', title: 'Exclusion History', columnsHtml: `<th class="p-3 text-left text-xs uppercase w-[15%]">Timestamp</th><th class="p-3 text-left text-xs uppercase w-[42.5%]">Process</th><th class="p-3 text-left text-xs uppercase w-[42.5%]">File/Folder</th>`, rowsArray: stats.exclusionData.map(i => ({ key: i.timestamp, columns: [i.timestamp, renderExclusionList(i.processExclusions, true), renderExclusionList(i.fileFolderExclusions, false)] })), defaultPageSize: 10 });
+            // Top Tables - using a 2-column grid
+            scanStatsHtml += `
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div>
+                        ${renderTopTable('topPaths', 'Top Paths (Directories)', stats.topPaths, 'Path', 'Scans', 'topPaths')}
+                        ${renderTopTable('topFiles', 'Top Files (Full Path)', stats.topFiles, 'File Path', 'Scans', 'topFiles')}
+                        ${renderTopTable('topExtensions', 'Top Extensions', stats.topExtensions, 'Extension', 'Scans', 'topExtensions')}
+                    </div>
+                    <div>
+                        ${renderTopTable('topThreadIds', 'Top Thread IDs', stats.topThreadIds, 'Thread ID', 'Scans', 'topThreadIds')}
+                        ${renderTopTable('topFilesPerExt', 'Top Files per Extension (First 10)', stats.topFilesPerExtension, 'Extension | File Path', 'Scans', 'topFilesPerExtension')}
+                        ${renderTopTable('topPathsPerExt', 'Top Paths per Extension (First 10)', stats.topPathsPerExtension, 'Extension | Path', 'Scans', 'topPathsPerExtension')}
+                    </div>
+                </div>
+            `;
+            scanStatsPanel.innerHTML = scanStatsHtml;
 
-            const dnsPanel = document.getElementById('dns-netprot-panel');
-            let dnsHtml = `<div class="p-4 bg-green-50 border border-green-200"><p class="font-bold">DNS/NetProtection Summary</p></div>`;
-            dnsHtml += renderPaginatedTable({ id: 'dns-table', title: 'DNS Logs', columnsHtml: `<th class="p-3 text-left text-xs uppercase w-[20%]">Timestamp</th><th class="p-3 text-left text-xs uppercase w-[20%]">Category</th><th class="p-3 text-left text-xs uppercase w-[60%]">Value</th>`, rowsArray: stats.dnsSecure.map(i => ({ key: i.timestamp, columns: [i.timestamp, i.category, i.value] })), defaultPageSize: 10 });
-            dnsPanel.innerHTML = dnsHtml;
 
+            // --- 3. Exclusions Panel ---
+            const exclusionsPanel = document.getElementById('exclusions-panel');
+            let exclusionHtml = `
+                <div class="p-4 bg-indigo-50 rounded-lg border border-indigo-200">
+                    <p class="text-lg font-bold text-indigo-700">Total Unique Exclusion Timestamps Logged: ${stats.exclusionData.length.toLocaleString()}</p>
+                </div>
+            `;
+            
+            const exclusionRows = stats.exclusionData.map(item => ({
+                key: item.timestamp,
+                columns: [
+                    `<span class="font-mono text-gray-800">${item.timestamp}</span>`,
+                    renderExclusionList(item.processExclusions, true),
+                    renderExclusionList(item.fileFolderExclusions, false)
+                ]
+            }));
+
+            const exclusionColumns = `
+                <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider sticky-header w-[15%]">Timestamp</th>
+                <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider sticky-header w-[42.5%]">Process Exclusions (${stats.exclusionData.reduce((acc, curr) => acc + curr.processExclusions.length, 0).toLocaleString()})</th>
+                <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider sticky-header w-[42.5%]">File/Folder Exclusions (${stats.exclusionData.reduce((acc, curr) => acc + curr.fileFolderExclusions.length, 0).toLocaleString()})</th>
+            `;
+
+            exclusionHtml += renderPaginatedTable({
+                id: 'exclusion-table-container', 
+                title: 'Exclusion History', 
+                columnsHtml: exclusionColumns, 
+                rowsArray: exclusionRows, 
+                defaultPageSize: 10
+            });
+            exclusionsPanel.innerHTML = exclusionHtml;
+
+            // --- 4. DNS / NetProtection Panel ---
+            const dnsNetProtPanel = document.getElementById('dns-netprot-panel');
+            let dnsNetProtHtml = `
+                <div class="p-4 bg-green-50 rounded-lg border border-green-200">
+                    <p class="text-lg font-bold text-green-700">DNS/NetProtection Log Summary</p>
+                    <p class="text-sm text-green-600">Total DNS Secure/Generic Entries: ${stats.dnsSecure.length.toLocaleString()}</p>
+                    <p class="text-sm text-green-600">Total NetProtection Entries (sum of categories): ${
+                        (stats.netProtection.raw.processNotTrusted.length + 
+                        stats.netProtection.raw.httpInterception.length + 
+                        stats.netProtection.raw.http2Interception.length + 
+                        stats.netProtection.raw.tlsHandshake.length + 
+                        stats.netProtection.raw.processConnection.length).toLocaleString()
+                    }</p>
+                </div>
+            `;
+            
+            // DNS Secure Table
+            const dnsRows = stats.dnsSecure.map(item => ({
+                key: item.timestamp,
+                columns: [
+                    `<span class="font-mono text-gray-800">${item.timestamp}</span>`,
+                    `<span class="font-semibold text-sm text-gray-700">${escapeHtml(item.category)}</span>`,
+                    escapeHtml(limitString(item.value, 70))
+                ]
+            }));
+            const dnsColumns = `
+                <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-[20%]">Timestamp</th>
+                <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-[20%]">Category</th>
+                <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-[60%]">Value (Domain/Process)</th>
+            `;
+            dnsNetProtHtml += renderPaginatedTable({
+                id: 'dns-secure-table', 
+                title: 'DNS Secure/Generic Blocked Logs', 
+                columnsHtml: dnsColumns, 
+                rowsArray: dnsRows, 
+                defaultPageSize: 10
+            });
+
+
+            // NetProtection Tables (PID Aggregation)
+            const netProtPidTable = (id, title, data) => {
+                const rows = data.map(item => ({
+                    key: item.pid,
+                    columns: [
+                        `<span class="font-mono text-gray-800">${item.pid}</span>`,
+                        `<span class="font-mono text-gray-800">${item.count.toLocaleString()}</span>`
+                    ]
+                }));
+                const columns = `
+                    <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-1/2">Process ID (PID)</th>
+                    <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider w-1/2">Count</th>
+                `;
+                return renderPaginatedTable({ 
+                    id: id, 
+                    title: `${title} (Total: ${data.length})`, 
+                    columnsHtml: columns, 
+                    rowsArray: rows, 
+                    defaultPageSize: 10
+                });
+            };
+
+            dnsNetProtHtml += `
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <div>
+                        ${netProtPidTable('net-prot-trusted', 'Process Not Trusted (Aggregated by PID)', stats.netProtection.processNotTrusted)}
+                    </div>
+                    <div>
+                        ${netProtPidTable('net-prot-http', 'HTTP Interception Starts (Aggregated by PID)', stats.netProtection.httpInterception)}
+                    </div>
+                    <div>
+                        ${netProtPidTable('net-prot-http2', 'HTTP2 Interception Starts (Aggregated by PID)', stats.netProtection.http2Interception)}
+                    </div>
+                </div>
+            `;
+            
+            // NetProtection Process Connection Table (Path Aggregation)
+            const procConnRows = stats.netProtection.processConnection.byPath.map(item => ({
+                key: item.path,
+                columns: [
+                    escapeHtml(limitString(item.path, 70)),
+                    `<span class="font-mono text-gray-800">${item.count.toLocaleString()}</span>`
+                ],
+                // Use the path as the key for breakdown
+                pathKey: item.path
+            }));
+            const procConnColumns = `
+                <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-3/4">Process Path</th>
+                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider w-1/4">Connection Starts</th>
+            `;
+            dnsNetProtHtml += renderPaginatedTable({
+                id: 'net-prot-conn', 
+                title: `Process Connection Initiations (Aggregated by Path - Total ${stats.netProtection.processConnection.allEntries.length})`, 
+                columnsHtml: procConnColumns, 
+                rowsArray: procConnRows, 
+                defaultPageSize: 10,
+                breakdownFn: 'netProcessConnection' // Custom breakdown type
+            });
+
+
+            // NetProtection TLS Handshake Table (Domain Aggregation)
+            const tlsDomainRows = stats.netProtection.tlsHandshake.byDomain.map(item => ({
+                key: item.domain,
+                columns: [
+                    escapeHtml(limitString(item.domain, 70)),
+                    `<span class="font-mono text-gray-800">${item.count.toLocaleString()}</span>`
+                ]
+            }));
+            const tlsDomainColumns = `
+                <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-3/4">Domain</th>
+                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider w-1/4">Handshakes</th>
+            `;
+            dnsNetProtHtml += renderPaginatedTable({
+                id: 'net-prot-tls-domain', 
+                title: `TLS Handshakes (Aggregated by Domain - Total ${stats.netProtection.tlsHandshake.allEntries.length})`, 
+                columnsHtml: tlsDomainColumns, 
+                rowsArray: tlsDomainRows, 
+                defaultPageSize: 10,
+                breakdownFn: 'netTlsHandshake' // Custom breakdown type
+            });
+            
+            // NetProtection TLS Handshake Return Value Table
+            const tlsReturnRows = stats.netProtection.tlsHandshake.byReturnValue.map(item => ({
+                key: item.returnValue,
+                columns: [
+                    `<span class="font-semibold text-sm text-gray-700">${escapeHtml(item.returnValue)}</span>`,
+                    `<span class="font-mono text-gray-800">${item.count.toLocaleString()}</span>`
+                ]
+            }));
+            const tlsReturnColumns = `
+                <th class="p-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-1/2">Return Value</th>
+                <th class="p-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider w-1/2">Count</th>
+            `;
+            dnsNetProtHtml += renderPaginatedTable({
+                id: 'net-prot-tls-return', 
+                title: 'TLS Handshake Results (Aggregated by Return Value)', 
+                columnsHtml: tlsReturnColumns, 
+                rowsArray: tlsReturnRows, 
+                defaultPageSize: 10
+            });
+
+            dnsNetProtPanel.innerHTML = dnsNetProtHtml;
+
+            // --- 4. Agent Log Analyzer Panel ---
             const agentPanel = document.getElementById('agent-tab');
-            agentPanel.innerHTML = `<div class="p-6 bg-white rounded-lg shadow-sm border border-gray-200"><h2 class="text-xl font-bold mb-4">Agent Log Analysis</h2><div class="flex gap-4 items-end"><div class="w-full"><label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Select agent.log</label><input type="file" id="agentInput" accept=".log,.txt" class="block w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:bg-emerald-50 file:text-emerald-700"/></div><div class="w-full md:w-1/3"><input type="text" id="agentFilter" onkeyup="filterAgentLogs()" placeholder="Search..." class="w-full px-4 py-2 border rounded-lg text-sm"></div><button onclick="parseAgentLogs()" class="bg-emerald-600 text-white font-bold py-2 px-6 rounded-lg h-10">Analyze</button></div><div id="agentStatus" class="mt-2 text-sm"></div></div><div id="agentResults" class="hidden"><div class="overflow-x-auto bg-white shadow border"><table class="min-w-full text-sm"><thead class="bg-gray-50 border-b"><tr><th class="px-4 py-3">Time</th><th class="px-4 py-3">Level</th><th class="px-4 py-3">PID</th><th class="px-4 py-3">Route</th><th class="px-4 py-3">Message</th></tr></thead><tbody id="agentLogBody"></tbody></table></div><div id="agentPagination" class="mt-4 flex justify-between text-sm text-gray-500"><span id="agentCount"></span><div class="space-x-2"><button onclick="changeAgentPage(-1)" class="px-3 py-1 border rounded">Prev</button><button onclick="changeAgentPage(1)" class="px-3 py-1 border rounded">Next</button></div></div></div>`;
+            if (agentPanel) {
+                let agentHtml = `
+                    <div class="p-6 bg-white rounded-lg shadow-sm border border-gray-200">
+                        <h2 class="text-xl font-bold text-gray-800 mb-4">Agent Log Analysis</h2>
+                        <p class="text-gray-600 mb-4 text-sm">Upload <code>agent.log</code> files to analyze structured logs and format JSON payloads.</p>
+                        
+                        <div class="flex flex-col md:flex-row gap-4 items-end">
+                            <div class="w-full">
+                                <label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Select Log File (.log/.txt)</label>
+                                <input type="file" id="agentInput" accept=".log,.txt" class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 transition"/>
+                            </div>
+                            <div class="w-full md:w-1/3">
+                                 <label class="block text-xs font-semibold text-gray-500 uppercase mb-1">Filter Messages</label>
+                                 <input type="text" id="agentFilter" onkeyup="filterAgentLogs()" placeholder="Search logs..." class="w-full px-4 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
+                            </div>
+                            <button onclick="parseAgentLogs()" class="bg-emerald-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-emerald-700 transition shadow-sm h-10">
+                                Analyze Logs
+                            </button>
+                        </div>
+                        <div id="agentStatus" class="mt-2 text-sm text-gray-500 font-medium"></div>
+                    </div>
+
+                    <div id="agentResults" class="hidden">
+                        <div class="overflow-x-auto bg-white rounded-lg shadow border border-gray-200">
+                            <table class="min-w-full text-sm text-left">
+                                <thead class="bg-gray-50 text-gray-500 font-medium border-b">
+                                    <tr>
+                                        <th class="px-4 py-3 w-40">Time (UTC)</th>
+                                        <th class="px-4 py-3 w-24">Level</th>
+                                        <th class="px-4 py-3 w-24">PID</th>
+                                        <th class="px-4 py-3 w-48">Route</th>
+                                        <th class="px-4 py-3">Message</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="agentLogBody" class="divide-y divide-gray-100"></tbody>
+                            </table>
+                        </div>
+                        <div id="agentPagination" class="mt-4 flex justify-between items-center text-sm text-gray-500">
+                            <span id="agentCount"></span>
+                            <div class="space-x-2">
+                                <button onclick="changeAgentPage(-1)" class="px-3 py-1 border rounded hover:bg-gray-50">Previous</button>
+                                <button onclick="changeAgentPage(1)" class="px-3 py-1 border rounded hover:bg-gray-50">Next</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                agentPanel.innerHTML = agentHtml;
+            }
         }
 
+        // Initialize the first tab (just in case)
+        document.addEventListener('DOMContentLoaded', () => {
+            const firstTabButton = document.querySelector('.tab-btn');
+            if(firstTabButton) {
+                firstTabButton.click();
+            }
+        });
+
         // --- AGENT LOG ANALYZER LOGIC ---
-        let g_agentLogs = [], g_filteredLogs = [], g_agentPage = 0;
+
+        let g_agentLogs = [];
+        let g_filteredLogs = [];
+        let g_agentPage = 0;
         const AGENT_PAGE_SIZE = 100;
+
+        // Regex for the format: [timestamp][guid][host][ver][pid][lvl][route] message
         const AGENT_REGEX = /^\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\[(.*?)\]\s+(.*)$/;
 
         async function parseAgentLogs() {
-            const input = document.getElementById('agentInput'), status = document.getElementById('agentStatus');
-            if (!input.files.length) return;
+            const fileInput = document.getElementById('agentInput');
+            const status = document.getElementById('agentStatus');
+            
+            if (!fileInput.files.length) {
+                status.textContent = "Please select a file first.";
+                status.className = "mt-2 text-sm text-red-600";
+                return;
+            }
+
+            status.textContent = "Parsing...";
+            status.className = "mt-2 text-sm text-blue-600";
+            
             try {
-                const text = await new Promise((res, rej) => { const r = new FileReader(); r.onload = e => res(e.target.result); r.onerror = rej; r.readAsText(input.files[0]); });
-                g_agentLogs = text.split(/\r?\n/).filter(l => l.trim()).map(line => {
-                    const match = line.replace(/^\s*/, '').match(AGENT_REGEX);
-                    return match ? { ts: match[1], id: match[2], host: match[3], ver: match[4], pid: match[5], lvl: match[6], route: match[7], msg: match[8] } : null;
-                }).filter(Boolean);
-                g_filteredLogs = [...g_agentLogs]; g_agentPage = 0; renderAgentTable();
-                status.textContent = `Parsed ${g_agentLogs.length} entries.`;
+                // Read file
+                const text = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = e => resolve(e.target.result);
+                    reader.onerror = reject;
+                    reader.readAsText(fileInput.files[0]);
+                });
+
+                const lines = text.split(/\r?\n/);
+                g_agentLogs = [];
+
+                lines.forEach(line => {
+                    if (!line.trim()) return;
+                    // Clean up any "" prefix if present from copy-paste
+                    const cleanLine = line.replace(/^\s*/, '');
+                    
+                    const match = cleanLine.match(AGENT_REGEX);
+                    if (match) {
+                        g_agentLogs.push({
+                            ts: match[1],
+                            id: match[2],
+                            host: match[3],
+                            ver: match[4],
+                            pid: match[5],
+                            lvl: match[6],
+                            route: match[7],
+                            msg: match[8]
+                        });
+                    }
+                });
+
+                g_filteredLogs = [...g_agentLogs];
+                g_agentPage = 0;
+                renderAgentTable();
+                
+                status.textContent = `Successfully parsed ${g_agentLogs.length.toLocaleString()} log entries.`;
+                status.className = "mt-2 text-sm text-green-600";
                 document.getElementById('agentResults').classList.remove('hidden');
-            } catch (e) { status.textContent = "Error: " + e.message; }
+
+            } catch (e) {
+                console.error(e);
+                status.textContent = "Error parsing file: " + e.message;
+                status.className = "mt-2 text-sm text-red-600";
+            }
         }
 
         function filterAgentLogs() {
             const term = document.getElementById('agentFilter').value.toLowerCase();
-            g_filteredLogs = g_agentLogs.filter(l => l.msg.toLowerCase().includes(term) || l.route.toLowerCase().includes(term) || l.lvl.toLowerCase().includes(term));
-            g_agentPage = 0; renderAgentTable();
+            g_filteredLogs = g_agentLogs.filter(log => 
+                log.msg.toLowerCase().includes(term) || 
+                log.route.toLowerCase().includes(term) ||
+                log.lvl.toLowerCase().includes(term)
+            );
+            g_agentPage = 0;
+            renderAgentTable();
+        }
+
+        function changeAgentPage(delta) {
+            const maxPage = Math.ceil(g_filteredLogs.length / AGENT_PAGE_SIZE) - 1;
+            g_agentPage += delta;
+            if (g_agentPage < 0) g_agentPage = 0;
+            if (g_agentPage > maxPage) g_agentPage = maxPage;
+            renderAgentTable();
         }
 
         function renderAgentTable() {
             const tbody = document.getElementById('agentLogBody');
-            const start = g_agentPage * AGENT_PAGE_SIZE, data = g_filteredLogs.slice(start, start + AGENT_PAGE_SIZE);
-            document.getElementById('agentCount').textContent = `Showing ${start + 1}-${Math.min(start + AGENT_PAGE_SIZE, g_filteredLogs.length)} of ${g_filteredLogs.length}`;
-            tbody.innerHTML = data.map((log, idx) => {
-                let lvlClass = log.lvl === 'ERR' ? "bg-red-100 text-red-800" : log.lvl === 'WRN' ? "bg-yellow-100 text-yellow-800" : "bg-blue-50 text-blue-700";
-                const hasPayload = log.msg.includes('{') || log.msg.includes('Payload');
-                return `<tr class="hover:bg-slate-50 border-b font-mono text-xs"><td class="px-4 py-2 text-gray-500">${escapeHtml(log.ts)}</td><td class="px-4 py-2"><span class="${lvlClass} px-2 py-0.5 rounded font-bold">${log.lvl}</span></td><td class="px-4 py-2 text-gray-500">${log.pid}</td><td class="px-4 py-2 truncate max-w-[150px]">${escapeHtml(log.route.replace('agent::', ''))}</td><td class="px-4 py-2 break-all">${escapeHtml(log.msg.substring(0, 120))}${log.msg.length > 120 ? '...' : ''} ${hasPayload ? `<button onclick="viewAgentPayload(${start + idx})" class="ml-2 text-indigo-600 underline">View Data</button>` : ''}</td></tr>`;
-            }).join('');
-        }
+            if (!tbody) return; // Exit if table body doesn't exist yet
+            const start = g_agentPage * AGENT_PAGE_SIZE;
+            const end = start + AGENT_PAGE_SIZE;
+            const pageData = g_filteredLogs.slice(start, end);
+            
+            document.getElementById('agentCount').textContent = 
+                `Showing ${start + 1}-${Math.min(end, g_filteredLogs.length)} of ${g_filteredLogs.length}`;
 
-        function changeAgentPage(d) {
-            const max = Math.ceil(g_filteredLogs.length / AGENT_PAGE_SIZE) - 1;
-            g_agentPage = Math.max(0, Math.min(max, g_agentPage + d)); renderAgentTable();
-        }
+            let html = '';
+            pageData.forEach((log, idx) => {
+                // Color coding for levels
+                let lvlClass = "bg-gray-100 text-gray-600";
+                if (log.lvl === 'ERR') lvlClass = "bg-red-100 text-red-800";
+                else if (log.lvl === 'WRN') lvlClass = "bg-yellow-100 text-yellow-800";
+                else if (log.lvl === 'INF') lvlClass = "bg-blue-50 text-blue-700";
 
-        /**
-         * PRETTIFIER FOR RUST DEBUG STRINGS
-         * Handles prefixes like Object, Some, Array, String, Bool, etc.
-         */
-        function prettifyRustDebug(str) {
-            let indent = 0;
-            const step = "    "; 
-            let result = "";
-            const tokens = str.split(/([\{\}\(\)\[\]\s,])/);
-
-            for (let i = 0; i < tokens.length; i++) {
-                let token = tokens[i].trim();
-                if (!token) continue;
-
-                if (token === "{" || token === "[" || token === "(") {
-                    result += token + "\n" + step.repeat(++indent);
-                } else if (token === "}" || token === "]" || token === ")") {
-                    result += "\n" + step.repeat(Math.max(0, --indent)) + token;
-                } else if (token === ",") {
-                    result += ",\n" + step.repeat(indent);
-                } else {
-                    result += token + " ";
+                // JSON Detection
+                let msgHtml = escapeHtml(log.msg);
+                let actionBtn = "";
+                
+                // Heuristic: If message contains "{" or looks like struct
+                if (log.msg.includes('{') || log.msg.includes('Job Payload:')) {
+                     // Create a "View Payload" button
+                     const logIndex = start + idx;
+                     actionBtn = `<button onclick="viewAgentPayload(${logIndex})" class="ml-2 text-xs bg-indigo-50 text-indigo-600 px-2 py-1 rounded border border-indigo-100 hover:bg-indigo-100">View Data</button>`;
                 }
-            }
-            return result.replace(/\s+:/g, ":").replace(/:\s+/g, ": ");
+
+                html += `
+                    <tr class="hover:bg-slate-50 border-b border-gray-100 font-mono text-xs">
+                        <td class="px-4 py-2 whitespace-nowrap text-gray-500">${escapeHtml(log.ts)}</td>
+                        <td class="px-4 py-2"><span class="${lvlClass} px-2 py-0.5 rounded text-[10px] font-bold">${escapeHtml(log.lvl)}</span></td>
+                        <td class="px-4 py-2 text-gray-500">${escapeHtml(log.pid)}</td>
+                        <td class="px-4 py-2 text-gray-600 truncate max-w-[150px]" title="${escapeHtml(log.route)}">${escapeHtml(log.route.replace('agent::', ''))}</td>
+                        <td class="px-4 py-2 text-gray-800 break-all">${msgHtml.substring(0, 120)}${log.msg.length > 120 ? '...' : ''} ${actionBtn}</td>
+                    </tr>
+                `;
+            });
+            tbody.innerHTML = html;
         }
 
         function viewAgentPayload(index) {
             const log = g_filteredLogs[index];
-            if (!log) return;
-            const formatted = (log.msg.includes('{') || log.msg.includes('[')) ? prettifyRustDebug(log.msg) : log.msg;
-            document.getElementById('jsonModalContent').innerHTML = `<div class="mb-2 p-2 bg-blue-50 border-l-4 border-blue-400 text-blue-700 text-[10px] uppercase font-bold">Rust Debug / Structured Log</div><pre class="whitespace-pre-wrap font-mono text-xs text-gray-800">${escapeHtml(formatted)}</pre>`;
+            if(!log) return;
+
+            let content = log.msg;
+            let title = "Log Detail";
+
+            // Try to format if it looks like JSON or Rust Struct
+            // 1. Valid JSON extraction
+            const jsonStart = content.indexOf('{');
+            const jsonEnd = content.lastIndexOf('}');
+            
+            if (jsonStart >= 0 && jsonEnd > jsonStart) {
+                const potentialJson = content.substring(jsonStart, jsonEnd + 1);
+                try {
+                    const obj = JSON.parse(potentialJson);
+                    content = syntaxHighlight(obj);
+                } catch (e) {
+                    // If strict parse fails, it might be Rust Debug output (e.g. `Some(Object { ... })`)
+                    // Simple formatter: add newlines after braces
+                    content = escapeHtml(content)
+                        .replace(/\{/g, '{\n  ')
+                        .replace(/\}/g, '\n}')
+                        .replace(/,/g, ',\n  ');
+                    content = `<pre>${content}</pre>`;
+                }
+            } else {
+                content = `<pre>${escapeHtml(content)}</pre>`;
+            }
+
+            document.getElementById('jsonModalContent').innerHTML = content;
             document.getElementById('jsonModal').classList.remove('hidden');
         }
 
-        window.parseAgentLogs = parseAgentLogs; window.filterAgentLogs = filterAgentLogs; window.changeAgentPage = changeAgentPage; window.viewAgentPayload = viewAgentPayload;
+        window.parseAgentLogs = parseAgentLogs;
+        window.filterAgentLogs = filterAgentLogs;
+        window.changeAgentPage = changeAgentPage;
+        window.viewAgentPayload = viewAgentPayload;
+
     </script>
 </body>
 </html>
